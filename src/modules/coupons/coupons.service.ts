@@ -104,7 +104,7 @@ export class CouponsService {
 
   // ─── User: validate ───────────────────────────────────────────────────────
 
-  async validateCoupon(dto: ValidateCouponDto) {
+  async validateCoupon(dto: ValidateCouponDto, userId?: string) {
     const coupon = await this.prisma.coupon.findUnique({
       where: { code: dto.code.toUpperCase().trim() },
     });
@@ -126,6 +126,18 @@ export class CouponsService {
       !coupon.applicableCourses.includes(dto.courseId)
     ) {
       throw new BadRequestException('Coupon is not valid for this course');
+    }
+
+    // Per-user limit: one use per coupon per user
+    if (userId) {
+      const priorUse = await this.prisma.payment.count({
+        where: {
+          userId,
+          status: 'COMPLETED',
+          metadata: { path: ['couponCode'], equals: coupon.code },
+        },
+      });
+      if (priorUse > 0) throw new BadRequestException('You have already used this coupon');
     }
 
     // Calculate discount

@@ -584,6 +584,8 @@ model Review {
 model Chat {
   id          String   @id @default(cuid())
   name        String?
+  type        String   @default("direct")  // "direct" | "course"
+  relatedId   String?                       // courseId when type = "course"
   isGroupChat Boolean  @default(false)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
@@ -591,6 +593,7 @@ model Chat {
   participants ChatParticipant[]
   messages     ChatMessage[]
 
+  @@index([type, relatedId])
   @@map("chats")
 }
 

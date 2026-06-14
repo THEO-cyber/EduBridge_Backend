@@ -500,9 +500,25 @@ export class AnalyticsService {
           reviewStats.length
         : 0;
 
-    // Calculate lesson engagement - return empty array for now since course structure changed
-    const lessonEngagement: any[] = [];
-    // TODO: Implement lesson engagement calculation with new course.sections structure
+    // Lesson engagement — grouped from progressStats by lesson
+    const allLessons = course.sections.flatMap((s) => s.lessons);
+    const lessonEngagement = allLessons.map((lesson) => {
+      const rows = progressStats.filter((p) => p.lesson.id === lesson.id);
+      const completions = rows.filter((p) => p.isCompleted).length;
+      const avgWatch =
+        rows.length > 0
+          ? Math.round(rows.reduce((sum, p) => sum + (p as any).watchTime, 0) / rows.length)
+          : 0;
+      return {
+        lessonId:         lesson.id,
+        lessonTitle:      lesson.title,
+        views:            rows.length,
+        completions,
+        completionRate:   rows.length > 0 ? Math.round((completions / rows.length) * 100) : 0,
+        averageWatchTime: avgWatch,
+        videoDuration:    lesson.videoDuration ?? null,
+      };
+    });
 
     // Enrollment trends over time
     const enrollmentTrends = this.groupEnrollmentsByDate(

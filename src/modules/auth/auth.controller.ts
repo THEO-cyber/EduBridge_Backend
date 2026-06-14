@@ -2,6 +2,7 @@ import {
   Controller, Post, Get, Body, Query, UseGuards,
   UnauthorizedException, Req, Res, HttpCode, HttpStatus,
 } from '@nestjs/common';
+// Req kept for Google OAuth callback
 import { AuthGuard } from '@nestjs/passport';
 import { ApiTags, ApiOperation, ApiBearerAuth, ApiQuery } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
@@ -91,11 +92,7 @@ export class AuthController {
   @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @ApiOperation({ summary: 'Login with email + password' })
   async login(@Body() dto: LoginDto) {
-    console.log('---------- [CONTROLLER] POST /auth/login — email:', dto.email);
-    const result = await this.authService.login(dto);
-    console.log('---------- [CONTROLLER] Login result has keys:', Object.keys(result));
-    console.log('---------- [CONTROLLER] requires2FA:', (result as any).requires2FA ?? false);
-    return result;
+    return this.authService.login(dto);
   }
 
   // ── Token refresh / logout ────────────────────────────────────────────────
@@ -124,15 +121,8 @@ export class AuthController {
   @UseGuards(JwtAuthGuard)
   @Get('me')
   @ApiOperation({ summary: 'Get authenticated user profile' })
-  async me(@CurrentUser() user: User, @Req() req: any) {
-    const authHeader = req.headers['authorization'];
-    console.log('---------- [PROFILE] GET /auth/me called');
-    console.log('---------- [PROFILE] Authorization header present:', !!authHeader);
-    console.log('---------- [PROFILE] Header value (first 30 chars):', authHeader?.slice(0, 30) + '...');
-    console.log('---------- [PROFILE] CurrentUser id:', user?.id, '| role:', user?.role);
-    const profile = await this.authService.getCurrentUser(user.id);
-    console.log('---------- [PROFILE] Returning profile for:', profile?.email);
-    return profile;
+  async me(@CurrentUser() user: User) {
+    return this.authService.getCurrentUser(user.id);
   }
 
   // ── Email verification ────────────────────────────────────────────────────

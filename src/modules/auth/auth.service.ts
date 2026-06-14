@@ -87,14 +87,10 @@ export class AuthService {
   // ── Login ─────────────────────────────────────────────────────────────────
 
   async login(dto: LoginDto) {
-    console.log('---------- [LOGIN] Attempt for email:', dto.email);
-
     const user = await this.prisma.user.findUnique({
       where: { email: dto.email },
       include: { userAuth: true, instructorProfile: true, studentProfile: true },
     });
-
-    console.log('---------- [LOGIN] User found in DB:', user ? `YES (id=${user.id}, role=${user.role})` : 'NO');
 
     if (!user?.userAuth?.passwordHash) throw new UnauthorizedException('Invalid credentials');
     if (!user.isActive) throw new UnauthorizedException('Account is deactivated');
@@ -137,7 +133,6 @@ export class AuthService {
 
     // If 2FA is enabled, return a short-lived temp token instead of full access
     if (ua.twoFactorEnabled) {
-      console.log('---------- [LOGIN] 2FA required for user:', user.id);
       const tempToken = await this.jwtService.signAsync(
         { sub: user.id, type: '2fa_pending' },
         { secret: this.configService.get<string>('jwt.secret'), expiresIn: '5m' },
@@ -146,9 +141,6 @@ export class AuthService {
     }
 
     const tokens = await this.generateTokens(user.id);
-    console.log('---------- [LOGIN] Success — tokens generated for user:', user.id);
-    console.log('---------- [LOGIN] Response keys:', Object.keys({ user: this.sanitize(user), ...tokens }));
-    console.log('---------- [LOGIN] accessToken (first 20 chars):', tokens.accessToken?.slice(0, 20) + '...');
     return { user: this.sanitize(user), ...tokens };
   }
 
@@ -550,7 +542,6 @@ export class AuthService {
   // ── Private helpers ───────────────────────────────────────────────────────
 
   private async generateTokens(userId: string) {
-    console.log('---------- [TOKENS] Generating tokens for userId:', userId);
     const payload = { sub: userId };
     const [accessToken, refreshToken] = await Promise.all([
       this.jwtService.signAsync(payload, {
@@ -573,7 +564,6 @@ export class AuthService {
     });
 
     const expiresIn = this.configService.get<string>('jwt.expiresIn');
-    console.log('---------- [TOKENS] Done — accessToken length:', accessToken?.length, '| expiresIn:', expiresIn);
     return {
       accessToken,
       refreshToken,

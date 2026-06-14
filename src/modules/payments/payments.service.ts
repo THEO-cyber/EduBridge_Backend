@@ -70,6 +70,17 @@ export class PaymentsService {
     if (dto.couponCode) {
       const coupon = await this.prisma.coupon.findUnique({ where: { code: dto.couponCode } });
       if (coupon && this.isCouponValid(coupon, dto.courseId)) {
+        // Per-user usage check — one coupon per user per course
+        const priorUse = await this.prisma.payment.count({
+          where: {
+            userId,
+            status: PaymentStatus.COMPLETED,
+            metadata: { path: ['couponCode'], equals: coupon.code },
+          },
+        });
+        if (priorUse > 0) {
+          throw new BadRequestException('You have already used this coupon');
+        }
         finalAmount = this.applyDiscount(finalAmount, coupon);
         appliedCoupon = coupon;
       }
@@ -266,6 +277,25 @@ export class PaymentsService {
 
   private async handlePaymentSuccess(intent: Stripe.PaymentIntent) {
     const m = intent.metadata;
+
+    // Idempotency guard — skip if this intent was already processed
+    const existingPayment = await this.prisma.payment.findUnique({
+      where: { stripePaymentIntentId: intent.id },
+      select: { status: true },
+    });
+    if (existingPayment?.status === PaymentStatus.COMPLETED) {
+      this.logger.warn(`Duplicate webhook ignored: payment_intent ${intent.id} already completed`);
+      return;
+    }
+
+    const existingEnrollment = await this.prisma.enrollment.findUnique({
+      where: { userId_courseId: { userId: m.userId, courseId: m.courseId } },
+      select: { id: true },
+    });
+    if (existingEnrollment) {
+      this.logger.warn(`Duplicate webhook ignored: enrollment already exists for user=${m.userId} course=${m.courseId}`);
+      return;
+    }
 
     try {
       await this.prisma.$transaction(async (tx) => {

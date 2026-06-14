@@ -480,88 +480,60 @@ export class ChatService {
     return { success: true };
   }
 
-  // Helper method for course-based chats (requires Chat schema to have type and relatedId fields)
-  async getOrCreateCourseChat(courseId: string, courseName: string) {
-    // TODO: Add type and relatedId fields to Chat model in schema
-    throw new Error(
-      'Course chats not yet implemented - requires schema update',
-    );
-
-    /* 
-    let chatRoom = await this.prisma.chat.findFirst({
-      where: {
-        type: 'course',
-        relatedId: courseId,
-      },
+  async getOrCreateCourseChat(courseId: string, requesterId: string) {
+    const participantSelect = {
       include: {
-        participants: {
-          include: {
-            user: {
-              select: {
-                id: true,
-                username: true,
-                firstName: true,
-                lastName: true,
-                avatar: true,
-              },
-            },
-          },
+        user: {
+          select: { id: true, username: true, firstName: true, lastName: true, avatar: true },
+        },
+      },
+    };
+
+    // Return existing course chat if one already exists
+    const existing = await this.prisma.chat.findFirst({
+      where: { type: 'course', relatedId: courseId } as any,
+      include: { participants: participantSelect },
+    });
+
+    if (existing) {
+      // Ensure the requester is a participant (e.g. new enrollee)
+      const isMember = existing.participants.some((p: any) => p.userId === requesterId);
+      if (!isMember) {
+        await this.prisma.chatParticipant.create({
+          data: { chatId: existing.id, userId: requesterId },
+        });
+      }
+      return existing;
+    }
+
+    // First time — create the room and seed it with instructor + all active enrollees
+    const course = await this.prisma.course.findUnique({
+      where: { id: courseId },
+      include: {
+        enrollments: {
+          where: { status: 'ACTIVE' },
+          select: { userId: true },
         },
       },
     });
 
-    if (!chatRoom) {
-      // Get course instructor and enrolled students
-      const course = await this.prisma.course.findUnique({
-        where: { id: courseId },
-        include: {
-          enrollments: {
-            select: { userId: true },
-          },
+    if (!course) throw new NotFoundException('Course not found');
+
+    const uniqueIds = [
+      ...new Set([course.instructorId, ...course.enrollments.map((e) => e.userId)]),
+    ];
+
+    return this.prisma.chat.create({
+      data: {
+        name: `${course.title} Discussion`,
+        type: 'course',
+        relatedId: courseId,
+        isGroupChat: true,
+        participants: {
+          create: uniqueIds.map((userId) => ({ userId })),
         },
-      });
-
-      if (!course) {
-        throw new NotFoundException('Course not found');
-      }
-
-      const participants = [
-        course.instructorId,
-        ...course.enrollments.map((e) => e.userId),
-      ];
-
-      chatRoom = await this.prisma.chat.create({
-        data: {
-          name: `${courseName} Discussion`,
-          type: 'course',
-          relatedId: courseId,
-          createdById: course.instructorId,
-          participants: {
-            create: participants.map((userId) => ({
-              userId,
-              joinedAt: new Date(),
-            })),
-          },
-        },
-        include: {
-          participants: {
-            include: {
-              user: {
-                select: {
-                  id: true,
-                  username: true,
-                  firstName: true,
-                  lastName: true,
-                  avatar: true,
-                },
-              },
-            },
-          },
-        },
-      });
-    }
-
-    return chatRoom;
-    */
+      } as any,
+      include: { participants: participantSelect },
+    });
   }
 }

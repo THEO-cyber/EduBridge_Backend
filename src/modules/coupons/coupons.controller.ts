@@ -5,9 +5,10 @@ import {
 } from './coupons.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
+import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { PaginationDto } from '../../common/dto/pagination.dto';
-import { Role } from '@prisma/client';
+import { Role, User } from '@prisma/client';
 
 @ApiTags('Coupons')
 @ApiBearerAuth('JWT-auth')
@@ -54,8 +55,8 @@ export class CouponsController {
 
   @Post('validate')
   @ApiOperation({ summary: 'Validate a coupon code and get the discounted price' })
-  validate(@Body() dto: ValidateCouponDto) {
-    return this.couponsService.validateCoupon(dto);
+  validate(@Body() dto: ValidateCouponDto, @CurrentUser() user: User) {
+    return this.couponsService.validateCoupon(dto, user?.id);
   }
 
   @Get('active')
