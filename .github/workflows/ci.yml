@@ -1,0 +1,161 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+env:
+  NODE_VERSION: '20'
+
+jobs:
+  lint-and-build:
+    name: Lint & Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate Prisma client
+        run: npx prisma generate
+        env:
+          DATABASE_URL: postgresql://dummy:dummy@localhost:5432/dummy
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Build
+        run: npm run build
+
+  test:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate Prisma client
+        run: npx prisma generate
+        env:
+          DATABASE_URL: postgresql://dummy:dummy@localhost:5432/dummy
+
+      - name: Run unit tests
+        run: npm test -- --passWithNoTests --forceExit
+        env:
+          NODE_ENV: test
+          JWT_SECRET: ci-test-secret-at-least-32-characters-long
+          JWT_REFRESH_SECRET: ci-test-refresh-secret-at-least-32-chars
+
+  e2e:
+    name: E2E Tests
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: edubridge
+          POSTGRES_PASSWORD: edubridge
+          POSTGRES_DB: edubridge_test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+      redis:
+        image: redis:7-alpine
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 6379:6379
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run migrations + enable pg_trgm
+        run: |
+          npx prisma migrate deploy
+          psql "$DATABASE_URL" -c "CREATE EXTENSION IF NOT EXISTS pg_trgm;" || true
+        env:
+          DATABASE_URL: postgresql://edubridge:edubridge@localhost:5432/edubridge_test
+
+      - name: Run e2e tests
+        run: npm run test:e2e -- --forceExit
+        env:
+          NODE_ENV: test
+          DATABASE_URL: postgresql://edubridge:edubridge@localhost:5432/edubridge_test
+          DIRECT_URL: postgresql://edubridge:edubridge@localhost:5432/edubridge_test
+          REDIS_HOST: localhost
+          REDIS_PORT: 6379
+          JWT_SECRET: ci-test-secret-at-least-32-characters-long
+          JWT_REFRESH_SECRET: ci-test-refresh-secret-at-least-32-chars
+          JWT_EXPIRES_IN: 7d
+          JWT_REFRESH_EXPIRES_IN: 30d
+          STRIPE_SECRET_KEY: sk_test_placeholder
+          STRIPE_WEBHOOK_SECRET: whsec_placeholder
+          AWS_ACCESS_KEY_ID: placeholder
+          AWS_SECRET_ACCESS_KEY: placeholder
+          AWS_REGION: us-east-1
+          AWS_S3_BUCKET: edubridge-test
+          LIVEKIT_API_KEY: placeholder
+          LIVEKIT_API_SECRET: placeholder
+          LIVEKIT_WS_URL: wss://placeholder.livekit.cloud
+          FIREBASE_PROJECT_ID: placeholder
+          FIREBASE_CLIENT_EMAIL: placeholder@placeholder.iam.gserviceaccount.com
+          FIREBASE_PRIVATE_KEY: "-----BEGIN RSA PRIVATE KEY-----\nplaceholder\n-----END RSA PRIVATE KEY-----\n"
+          EMAIL_HOST: localhost
+          EMAIL_PORT: 587
+          EMAIL_USER: test@test.com
+          EMAIL_PASS: placeholder
+          EMAIL_FROM: "EduBridge <noreply@edubridge.com>"
+
+  docker:
+    name: Docker Build
+    runs-on: ubuntu-latest
+    needs: [lint-and-build]
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: false
+          tags: edubridge-backend:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

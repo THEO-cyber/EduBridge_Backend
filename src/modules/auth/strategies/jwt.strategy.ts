@@ -18,6 +18,8 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
   }
 
   async validate(payload: any) {
+    console.log('---------- [JWT] Token received — sub:', payload?.sub, '| exp:', payload?.exp ? new Date(payload.exp * 1000).toISOString() : 'none');
+
     const user = await this.prisma.user.findUnique({
       where: { id: payload.sub },
       include: {
@@ -26,7 +28,10 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       },
     });
 
+    console.log('---------- [JWT] User lookup result:', user ? `FOUND (id=${user.id}, active=${user.isActive})` : 'NOT FOUND');
+
     if (!user || !user.isActive) {
+      console.log('---------- [JWT] REJECTED — user not found or inactive');
       throw new UnauthorizedException('Invalid token');
     }
 

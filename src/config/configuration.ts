@@ -2,6 +2,8 @@ export const configuration = () => ({
   port: parseInt(process.env.PORT || '3000', 10),
   nodeEnv: process.env.NODE_ENV || 'development',
   frontendUrl: process.env.FRONTEND_URL || 'http://localhost:3000',
+  backendUrl: process.env.BACKEND_URL || 'http://localhost:3000',
+  sentryDsn: process.env.SENTRY_DSN || '',
 
   database: {
     url: process.env.DATABASE_URL,
@@ -24,7 +26,7 @@ export const configuration = () => ({
   aws: {
     accessKeyId: process.env.AWS_ACCESS_KEY_ID,
     secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
-    region: process.env.AWS_S3_REGION || 'us-east-1',
+    region: process.env.AWS_REGION || process.env.AWS_S3_REGION || 'us-east-1',
     s3Bucket: process.env.AWS_S3_BUCKET,
   },
 
@@ -51,6 +53,15 @@ export const configuration = () => ({
     apiKey: process.env.LIVEKIT_API_KEY,
     apiSecret: process.env.LIVEKIT_API_SECRET,
     wsUrl: process.env.LIVEKIT_WS_URL,
+  },
+
+  firebase: {
+    // Path to service-account JSON downloaded from Firebase console.
+    // Alternatively supply the individual fields via env vars.
+    serviceAccountPath: process.env.FIREBASE_SERVICE_ACCOUNT_PATH,
+    projectId:          process.env.FIREBASE_PROJECT_ID,
+    clientEmail:        process.env.FIREBASE_CLIENT_EMAIL,
+    privateKey:         process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
   },
 
   upload: {

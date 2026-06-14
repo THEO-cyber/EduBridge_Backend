@@ -2,6 +2,7 @@ import {
   Injectable,
   NotFoundException,
   BadRequestException,
+  ForbiddenException,
 } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import {
@@ -236,6 +237,50 @@ export class UsersService {
       }
       throw error;
     }
+  }
+
+  async getCourseStudents(instructorId: string, courseId: string, paginationDto: PaginationDto) {
+    const { page, limit, skip } = paginationDto;
+
+    // Verify the course belongs to this instructor
+    const course = await this.prisma.course.findUnique({ where: { id: courseId } });
+    if (!course) throw new NotFoundException('Course not found');
+    if (course.instructorId !== instructorId) {
+      throw new ForbiddenException('You are not the instructor of this course');
+    }
+
+    const [enrollments, total] = await Promise.all([
+      this.prisma.enrollment.findMany({
+        where: { courseId },
+        skip,
+        take: limit,
+        include: {
+          user: {
+            select: { id: true, firstName: true, lastName: true, email: true, avatar: true, createdAt: true },
+          },
+          lessonProgress: {
+            select: { lessonId: true, isCompleted: true, watchTime: true, completedAt: true },
+          },
+        },
+        orderBy: { enrolledAt: 'desc' },
+      }),
+      this.prisma.enrollment.count({ where: { courseId } }),
+    ]);
+
+    return {
+      students: enrollments.map(e => ({
+        enrollment: {
+          id:                 e.id,
+          status:             e.status,
+          progressPercentage: Number(e.progressPercentage),
+          enrolledAt:         e.enrolledAt,
+          completedAt:        e.completedAt,
+        },
+        student:        e.user,
+        lessonProgress: e.lessonProgress,
+      })),
+      pagination: { page, limit, total, pages: Math.ceil(total / (limit ?? 20)) },
+    };
   }
 
   async getInstructors(paginationDto: PaginationDto) {

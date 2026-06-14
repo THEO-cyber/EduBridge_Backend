@@ -23,6 +23,7 @@ import { UpdateCourseDto } from './dto/update-course.dto';
 import { PaginationDto } from '../../common/dto/pagination.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
+import { OptionalJwtAuthGuard } from '../../common/guards/optional-jwt.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { Public } from '../../common/decorators/public.decorator';
@@ -129,6 +130,7 @@ export class CoursesController {
     return this.coursesService.getInstructorCourses(user.id, paginationDto);
   }
 
+  @UseGuards(OptionalJwtAuthGuard)
   @Get('slug/:slug')
   @ApiOperation({ summary: 'Get course by slug' })
   @ApiParam({ name: 'slug', description: 'Course slug' })
@@ -136,6 +138,7 @@ export class CoursesController {
     return this.coursesService.findBySlug(slug, user?.id);
   }
 
+  @UseGuards(OptionalJwtAuthGuard)
   @Get(':id')
   @ApiOperation({ summary: 'Get course by ID' })
   async findOne(@Param('id') id: string, @CurrentUser() user?: User) {

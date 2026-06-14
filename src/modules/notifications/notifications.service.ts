@@ -3,8 +3,10 @@ import {
   NotFoundException,
   BadRequestException,
 } from '@nestjs/common';
+import { randomUUID } from 'crypto';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { NotificationsGateway } from './notifications.gateway';
+import { FirebasePushService } from '../../common/firebase/firebase-push.service';
 import { PaginationDto } from '../../common/dto/pagination.dto';
 import { NotificationType } from '@prisma/client';
 
@@ -20,70 +22,136 @@ export interface CreateNotificationData {
 @Injectable()
 export class NotificationsService {
   constructor(
-    private prisma: PrismaService,
-    private notificationsGateway: NotificationsGateway,
+    private readonly prisma: PrismaService,
+    private readonly notificationsGateway: NotificationsGateway,
+    private readonly pushService: FirebasePushService,
   ) {}
 
-  async createNotification(notificationData: CreateNotificationData) {
+  // ─── Device token management ────────────────────────────────────────────────
+
+  async saveDeviceToken(
+    userId: string,
+    token: string,
+    platform: 'android' | 'ios' | 'web' = 'android',
+  ) {
+    await this.prisma.deviceToken.upsert({
+      where: { userId_token: { userId, token } },
+      create: { userId, token, platform },
+      update: { platform, updatedAt: new Date() },
+    });
+    return { success: true };
+  }
+
+  async removeDeviceToken(userId: string, token: string) {
+    await this.prisma.deviceToken.deleteMany({ where: { userId, token } });
+    return { success: true };
+  }
+
+  private async removeStaleTokens(tokens: string[]) {
+    if (tokens.length === 0) return;
+    await this.prisma.deviceToken.deleteMany({ where: { token: { in: tokens } } });
+  }
+
+  private async getUserFcmTokens(userId: string): Promise<string[]> {
+    const records = await this.prisma.deviceToken.findMany({
+      where: { userId },
+      select: { token: true },
+    });
+    return records.map((r) => r.token);
+  }
+
+  // ─── Core notification dispatch ─────────────────────────────────────────────
+
+  async createNotification(data: CreateNotificationData) {
     const notification = await this.prisma.notification.create({
       data: {
-        userId: notificationData.userId,
-        type: notificationData.type,
-        title: notificationData.title,
-        message: notificationData.message,
-        metadata: notificationData.data,
-        actionUrl: notificationData.actionUrl,
+        userId:    data.userId,
+        type:      data.type,
+        title:     data.title,
+        message:   data.message,
+        metadata:  data.data,
+        actionUrl: data.actionUrl,
       },
     });
 
-    // Send real-time notification via Socket.IO
-    this.notificationsGateway.sendNotificationToUser(
-      notificationData.userId,
-      notification,
-    );
+    if (this.notificationsGateway.isUserConnected(data.userId)) {
+      this.notificationsGateway.sendNotificationToUser(data.userId, notification);
+    } else {
+      this.sendPush(data.userId, data.title, data.message, data.data).catch(() => {});
+    }
 
     return notification;
   }
 
   async createBulkNotifications(notifications: CreateNotificationData[]) {
-    const createdNotifications = await this.prisma.notification.createMany({
-      data: notifications,
+    const result = await this.prisma.notification.createMany({
+      data: notifications.map((n) => ({
+        userId:    n.userId,
+        type:      n.type,
+        title:     n.title,
+        message:   n.message,
+        metadata:  n.data,
+        actionUrl: n.actionUrl,
+      })),
       skipDuplicates: true,
     });
 
-    // Send notifications to all users in bulk
-    for (const notification of notifications) {
-      const savedNotification = await this.prisma.notification.findFirst({
-        where: {
-          userId: notification.userId,
-          type: notification.type,
-          title: notification.title,
-        },
+    // Fire push + WS for each
+    for (const n of notifications) {
+      const saved = await this.prisma.notification.findFirst({
+        where: { userId: n.userId, type: n.type, title: n.title },
         orderBy: { createdAt: 'desc' },
       });
-
-      if (savedNotification) {
-        this.notificationsGateway.sendNotificationToUser(
-          notification.userId,
-          savedNotification,
-        );
+      if (saved) {
+        if (this.notificationsGateway.isUserConnected(n.userId)) {
+          this.notificationsGateway.sendNotificationToUser(n.userId, saved);
+        } else {
+          this.sendPush(n.userId, n.title, n.message, n.data).catch(() => {});
+        }
       }
     }
 
-    return createdNotifications;
+    return result;
   }
+
+  // ─── FCM sender (internal) ──────────────────────────────────────────────────
+
+  private async sendPush(
+    userId: string,
+    title: string,
+    body: string,
+    data?: Record<string, any>,
+  ) {
+    const tokens = await this.getUserFcmTokens(userId);
+    if (tokens.length === 0) return;
+
+    // Stringify data values — FCM only accepts string values
+    const stringData: Record<string, string> = {};
+    if (data) {
+      for (const [k, v] of Object.entries(data)) {
+        stringData[k] = typeof v === 'string' ? v : JSON.stringify(v);
+      }
+    }
+
+    const { staleTokens } = await this.pushService.sendToTokens(tokens, {
+      title,
+      body,
+      data: stringData,
+    });
+
+    await this.removeStaleTokens(staleTokens);
+  }
+
+  // ─── Read / delete ──────────────────────────────────────────────────────────
 
   async getUserNotifications(
     userId: string,
     paginationDto: PaginationDto,
-    unreadOnly: boolean = false,
+    unreadOnly = false,
   ) {
     const { page, limit, skip } = paginationDto;
-
     const where: any = { userId };
-    if (unreadOnly) {
-      where.isRead = false;
-    }
+    if (unreadOnly) where.isRead = false;
 
     const [notifications, total, unreadCount] = await Promise.all([
       this.prisma.notification.findMany({
@@ -93,9 +161,7 @@ export class NotificationsService {
         orderBy: { createdAt: 'desc' },
       }),
       this.prisma.notification.count({ where }),
-      this.prisma.notification.count({
-        where: { userId, isRead: false },
-      }),
+      this.prisma.notification.count({ where: { userId, isRead: false } }),
     ]);
 
     return {
@@ -112,73 +178,109 @@ export class NotificationsService {
 
   async markAsRead(userId: string, notificationId: string) {
     const notification = await this.prisma.notification.findFirst({
-      where: {
-        id: notificationId,
-        userId,
-      },
+      where: { id: notificationId, userId },
     });
+    if (!notification) throw new NotFoundException('Notification not found');
+    if (notification.isRead) throw new BadRequestException('Already read');
 
-    if (!notification) {
-      throw new NotFoundException('Notification not found');
-    }
-
-    if (notification.isRead) {
-      throw new BadRequestException('Notification already marked as read');
-    }
-
-    const updatedNotification = await this.prisma.notification.update({
+    return this.prisma.notification.update({
       where: { id: notificationId },
       data: { isRead: true },
     });
-
-    return updatedNotification;
   }
 
   async markAllAsRead(userId: string) {
     const result = await this.prisma.notification.updateMany({
-      where: {
-        userId,
-        isRead: false,
-      },
-      data: {
-        isRead: true,
-      },
+      where: { userId, isRead: false },
+      data: { isRead: true },
     });
-
     return { markedCount: result.count };
   }
 
   async deleteNotification(userId: string, notificationId: string) {
     const notification = await this.prisma.notification.findFirst({
-      where: {
-        id: notificationId,
-        userId,
-      },
+      where: { id: notificationId, userId },
     });
-
-    if (!notification) {
-      throw new NotFoundException('Notification not found');
-    }
-
-    await this.prisma.notification.delete({
-      where: { id: notificationId },
-    });
-
+    if (!notification) throw new NotFoundException('Notification not found');
+    await this.prisma.notification.delete({ where: { id: notificationId } });
     return { success: true };
   }
 
-  // Helper methods for common notification types
-  async notifyEnrollmentSuccess(
-    userId: string,
-    courseTitle: string,
-    courseId: string,
+  // ─── Admin broadcast ────────────────────────────────────────────────────────
+
+  async broadcastToRole(
+    role: 'STUDENT' | 'INSTRUCTOR' | 'ADMIN' | 'ALL',
+    title: string,
+    message: string,
+    data?: Record<string, any>,
+    actionUrl?: string,
   ) {
+    const where = role === 'ALL' ? { isActive: true } : { role: role as any, isActive: true };
+    const users = await this.prisma.user.findMany({ where, select: { id: true } });
+
+    if (users.length === 0) return { sent: 0 };
+
+    const type = NotificationType.SYSTEM_ALERT;
+    const batchId = randomUUID();
+    await this.prisma.notification.createMany({
+      data: users.map((u) => ({
+        userId: u.id, type, title, message, actionUrl,
+        metadata: { ...(data ?? {}), batchId },
+      })),
+      skipDuplicates: true,
+    });
+
+    for (const u of users) {
+      if (this.notificationsGateway.isUserConnected(u.id)) {
+        this.notificationsGateway.sendNotificationToUser(u.id, { title, message, type, data, actionUrl });
+      } else {
+        this.sendPush(u.id, title, message, data).catch(() => {});
+      }
+    }
+
+    return { sent: users.length, batchId };
+  }
+
+  async broadcastToUsers(
+    userIds: string[],
+    title: string,
+    message: string,
+    data?: Record<string, any>,
+    actionUrl?: string,
+  ) {
+    if (userIds.length === 0) return { sent: 0 };
+
+    const type = NotificationType.SYSTEM_ALERT;
+    const batchId = randomUUID();
+    await this.prisma.notification.createMany({
+      data: userIds.map((userId) => ({
+        userId, type, title, message, actionUrl,
+        metadata: { ...(data ?? {}), batchId },
+      })),
+      skipDuplicates: true,
+    });
+
+    for (const userId of userIds) {
+      if (this.notificationsGateway.isUserConnected(userId)) {
+        this.notificationsGateway.sendNotificationToUser(userId, { title, message, type, data, actionUrl });
+      } else {
+        this.sendPush(userId, title, message, data).catch(() => {});
+      }
+    }
+
+    return { sent: userIds.length, batchId };
+  }
+
+  // ─── Typed helpers ──────────────────────────────────────────────────────────
+
+  async notifyEnrollmentSuccess(userId: string, courseTitle: string, courseId: string) {
     return this.createNotification({
       userId,
       type: NotificationType.ENROLLMENT,
       title: 'Course Enrollment Successful',
       message: `You have successfully enrolled in "${courseTitle}"`,
       data: { courseId },
+      actionUrl: `/courses/${courseId}`,
     });
   }
 
@@ -198,17 +300,14 @@ export class NotificationsService {
     });
   }
 
-  async notifyCourseCompleted(
-    userId: string,
-    courseTitle: string,
-    courseId: string,
-  ) {
+  async notifyCourseCompleted(userId: string, courseTitle: string, courseId: string) {
     return this.createNotification({
       userId,
       type: NotificationType.PROGRESS,
-      title: 'Course Completed!',
+      title: 'Course Completed! 🎉',
       message: `Congratulations! You completed "${courseTitle}". Your certificate is ready.`,
       data: { courseId, certificateAvailable: true },
+      actionUrl: `/certificates`,
     });
   }
 
@@ -222,23 +321,21 @@ export class NotificationsService {
     return this.createNotification({
       userId,
       type: NotificationType.LIVE_SESSION,
-      title: 'Live Session Scheduled',
-      message: `Your session "${sessionTitle}" with ${instructorName} is scheduled for ${sessionDate.toLocaleDateString()}`,
+      title: 'Live Session Confirmed',
+      message: `"${sessionTitle}" with ${instructorName} on ${sessionDate.toLocaleDateString()}`,
       data: { sessionId, sessionDate: sessionDate.toISOString() },
+      actionUrl: `/sessions/${sessionId}`,
     });
   }
 
-  async notifyLiveSessionStarting(
-    userId: string,
-    sessionTitle: string,
-    sessionId: string,
-  ) {
+  async notifyLiveSessionStarting(userId: string, sessionTitle: string, sessionId: string) {
     return this.createNotification({
       userId,
       type: NotificationType.LIVE_SESSION,
-      title: 'Session Starting Soon',
-      message: `Your session "${sessionTitle}" starts in 15 minutes`,
-      data: { sessionId, urgent: true },
+      title: 'Session Starting Soon ⏰',
+      message: `"${sessionTitle}" starts in 15 minutes`,
+      data: { sessionId, urgent: 'true' },
+      actionUrl: `/sessions/${sessionId}/join`,
     });
   }
 
@@ -253,8 +350,9 @@ export class NotificationsService {
       userId,
       type: NotificationType.PAYMENT_SUCCESS,
       title: 'Payment Successful',
-      message: `Payment of ${currency.toUpperCase()} ${amount.toFixed(2)} for "${courseTitle}" was successful`,
-      data: { paymentId, amount, currency },
+      message: `${currency.toUpperCase()} ${amount.toFixed(2)} for "${courseTitle}" — receipt ready`,
+      data: { paymentId, amount: String(amount), currency },
+      actionUrl: `/payments/history`,
     });
   }
 
@@ -269,8 +367,8 @@ export class NotificationsService {
       userId: instructorId,
       type: NotificationType.PAYOUT,
       title: 'Payout Processed',
-      message: `You received ${currency.toUpperCase()} ${amount.toFixed(2)} from "${courseTitle}" sales`,
-      data: { payoutId, amount, currency },
+      message: `${currency.toUpperCase()} ${amount.toFixed(2)} from "${courseTitle}" sales`,
+      data: { payoutId, amount: String(amount), currency },
     });
   }
 
@@ -286,9 +384,10 @@ export class NotificationsService {
       title: `New message from ${senderName}`,
       message:
         messagePreview.length > 50
-          ? messagePreview.substring(0, 47) + '...'
+          ? `${messagePreview.substring(0, 47)}…`
           : messagePreview,
       data: { senderName, chatId },
+      actionUrl: `/chat/${chatId}`,
     });
   }
 }

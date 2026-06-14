@@ -134,3 +134,7 @@ test-results/
 # Prisma
 prisma/dev.db
 prisma/dev.db-journal
+
+# Firebase service account (NEVER commit — contains private key)
+firebase-service-account.json
+*-firebase-adminsdk-*.json

@@ -1,5 +1,5 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
+// EduBridge Prisma schema
+// learn more: https://pris.ly/d/prisma-schema
 
 generator client {
   provider = "prisma-client-js"
@@ -11,7 +11,8 @@ datasource db {
   directUrl = env("DIRECT_URL")
 }
 
-// Enums
+// ─── Enums ────────────────────────────────────────────────────────────────────
+
 enum Role {
   STUDENT
   INSTRUCTOR
@@ -22,11 +23,9 @@ enum Role {
 enum CourseStatus {
   DRAFT
   UNDER_REVIEW
-  PENDING_REVIEW  // Add this for backward compatibility
   PUBLISHED
-  APPROVED        // Add this for admin functions
   REJECTED
-  SUSPENDED       // Add this for admin functions
+  SUSPENDED
   ARCHIVED
 }
 
@@ -47,7 +46,6 @@ enum EnrollmentStatus {
 enum PaymentStatus {
   PENDING
   COMPLETED
-  SUCCEEDED       // Add this for Stripe integration
   FAILED
   CANCELLED
   REFUNDED
@@ -88,210 +86,240 @@ enum VideoStatus {
   PENDING
   UPLOADED
   PROCESSING
+  PENDING_REVIEW
   READY
-  COMPLETED
   FAILED
 }
 
-// Core User System
-model User {
-  id                    String   @id @default(cuid())
-  email                 String   @unique
-  username              String   @unique
-  firstName             String
-  lastName              String
-  avatar                String?
-  bio                   String?
-  isEmailVerified       Boolean  @default(false)
-  isActive              Boolean  @default(true)
-  role                  Role     @default(STUDENT)
-  timezone              String   @default("UTC")
-  language              String   @default("en")
-  lastLoginAt           DateTime?
-  createdAt             DateTime @default(now())
-  updatedAt             DateTime @updatedAt
-  
-  // Relations
-  userAuth              UserAuth?
-  instructorProfile     InstructorProfile?
-  studentProfile        StudentProfile?
-  enrollments           Enrollment[]
-  payments              Payment[]
-  reviews               Review[]
-  notifications         Notification[]
-  chatParticipants      ChatParticipant[]
-  chatMessages          ChatMessage[] @relation("ChatMessageSender")
-  courseCreated         Course[] @relation("CourseInstructor")
-  wishlistItems         Wishlist[]
-  certificates          Certificate[]
-  sessionRequests       SessionRequest[]
-  sessionInstructor     LiveSession[] @relation("SessionInstructor")
-  sessionStudent        LiveSession[] @relation("SessionStudent")
-  analytics             UserAnalytics?
+// ─── Users ────────────────────────────────────────────────────────────────────
 
+model User {
+  id              String    @id @default(cuid())
+  email           String    @unique
+  username        String    @unique
+  firstName       String
+  lastName        String
+  avatar          String?
+  bio             String?
+  isEmailVerified Boolean   @default(false)
+  isActive        Boolean   @default(true)
+  role            Role      @default(STUDENT)
+  timezone        String    @default("UTC")
+  language        String    @default("en")
+  lastLoginAt     DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  userAuth                  UserAuth?
+  instructorProfile         InstructorProfile?
+  studentProfile            StudentProfile?
+  enrollments               Enrollment[]
+  payments                  Payment[]
+  reviews                   Review[]
+  notifications             Notification[]
+  chatParticipants          ChatParticipant[]
+  chatMessages              ChatMessage[]       @relation("ChatMessageSender")
+  courseCreated             Course[]            @relation("CourseInstructor")
+  wishlistItems             Wishlist[]
+  certificates              Certificate[]
+  sessionRequests           SessionRequest[]    @relation("StudentRequests")
+  sessionRequestsInstructor SessionRequest[]    @relation("InstructorRequests")
+  sessionInstructor         LiveSession[]       @relation("SessionInstructor")
+  sessionStudent            LiveSession[]       @relation("SessionStudent")
+  analytics                 UserAnalytics?
+  deviceTokens              DeviceToken[]
+  courseAnnouncements       CourseAnnouncement[]
+  studentNotes              StudentNote[]
+  contentReports            ContentReport[]
+  instructorApplication     InstructorApplication?
+  emailPreference           EmailPreference?
+  quizAttempts              QuizAttempt[]
+
+  @@index([email])
+  @@index([role, isActive])
   @@map("users")
 }
 
 model UserAuth {
-  id                    String   @id @default(cuid())
-  userId                String   @unique
-  passwordHash          String?
-  googleId              String?  @unique
-  refreshToken          String?
-  emailVerificationToken String?
-  passwordResetToken    String?
-  passwordResetExpires  DateTime?
-  twoFactorEnabled      Boolean  @default(false)
-  twoFactorSecret       String?
-  createdAt             DateTime @default(now())
-  updatedAt             DateTime @updatedAt
-  
-  user                  User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id                          String    @id @default(cuid())
+  userId                      String    @unique
+  passwordHash                String?
+  googleId                    String?   @unique
+  refreshToken                String?
+  refreshTokenHash            String?
+  emailVerificationToken      String?
+  emailVerificationTokenHash  String?
+  passwordResetToken          String?
+  passwordResetTokenHash      String?
+  passwordResetExpires        DateTime?
+  passwordResetCount          Int       @default(0)
+  passwordResetWindowStart    DateTime?
+  loginAttempts               Int       @default(0)
+  lockedUntil                 DateTime?
+  twoFactorEnabled            Boolean   @default(false)
+  twoFactorSecret             String?
+  createdAt                   DateTime  @default(now())
+  updatedAt                   DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@map("user_auth")
 }
 
 model InstructorProfile {
-  id                    String   @id @default(cuid())
-  userId                String   @unique
-  title                 String?
-  expertise             String[]
-  experience            String?
-  education             String?
-  certifications        String[]
-  website               String?
-  socialLinks           Json?
-  hourlyRate            Decimal?
-  isVerified            Boolean  @default(false)
-  verificationDocuments String[]
-  payoutAccountId       String?
-  rating                Decimal  @default(0) @db.Decimal(3, 2)
-  totalReviews          Int      @default(0)
-  totalStudents         Int      @default(0)
-  totalRevenue          Decimal  @default(0) @db.Decimal(10, 2)
-  isAvailableForSessions Boolean @default(true)
-  createdAt             DateTime @default(now())
-  updatedAt             DateTime @updatedAt
-  
-  user                  User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  availabilitySlots     AvailabilitySlot[]
-  payouts               Payout[]
+  id                     String    @id @default(cuid())
+  userId                 String    @unique
+  title                  String?
+  expertise              String[]
+  experience             String?
+  education              String?
+  certifications         String[]
+  website                String?
+  socialLinks            Json?
+  hourlyRate             Decimal?  @db.Decimal(10, 2)
+  isVerified             Boolean   @default(false)
+  verificationDocuments  String[]
+  payoutAccountId        String?
+  rating                 Decimal   @default(0) @db.Decimal(3, 2)
+  totalReviews           Int       @default(0)
+  totalStudents          Int       @default(0)
+  totalRevenue           Decimal   @default(0) @db.Decimal(10, 2)
+  isAvailableForSessions Boolean   @default(true)
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
+
+  user              User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  availabilitySlots AvailabilitySlot[]
+  payouts           Payout[]
 
   @@map("instructor_profiles")
 }
 
 model StudentProfile {
-  id                    String   @id @default(cuid())
-  userId                String   @unique
-  dateOfBirth           DateTime?
-  interests             String[]
-  learningGoals         String?
-  preferredLanguage     String   @default("en")
-  createdAt             DateTime @default(now())
-  updatedAt             DateTime @updatedAt
-  
-  user                  User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id                String    @id @default(cuid())
+  userId            String    @unique
+  dateOfBirth       DateTime?
+  interests         String[]
+  learningGoals     String?
+  preferredLanguage String    @default("en")
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@map("student_profiles")
 }
 
-// Course System
-model Category {
-  id                    String   @id @default(cuid())
-  name                  String   @unique
-  slug                  String   @unique
-  description           String?
-  icon                  String?
-  parentId              String?
-  isActive              Boolean  @default(true)
-  sortOrder             Int      @default(0)
-  createdAt             DateTime @default(now())
-  updatedAt             DateTime @updatedAt
-  
-  parent                Category? @relation("CategoryHierarchy", fields: [parentId], references: [id])
-  children              Category[] @relation("CategoryHierarchy")
-  courses               Course[]
+// ─── Courses ──────────────────────────────────────────────────────────────────
 
+model Category {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  slug        String   @unique
+  description String?
+  icon        String?
+  parentId    String?
+  isActive    Boolean  @default(true)
+  sortOrder   Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  parent   Category?  @relation("CategoryHierarchy", fields: [parentId], references: [id])
+  children Category[] @relation("CategoryHierarchy")
+  courses  Course[]
+
+  @@index([isActive])
   @@map("categories")
 }
 
 model Course {
-  id                    String      @id @default(cuid())
-  title                 String
-  slug                  String      @unique
-  description           String
-  shortDescription      String?
-  thumbnail             String?
-  previewVideo          String?
-  instructorId          String
-  categoryId            String
-  price                 Decimal     @db.Decimal(10, 2)
-  discountPrice         Decimal?    @db.Decimal(10, 2)
-  currency              String      @default("USD")
-  level                 CourseLevel @default(BEGINNER)
-  duration              Int?        // in minutes
-  language              String      @default("en")
-  requirements          String[]
-  objectives            String[]
-  tags                  String[]
-  status                CourseStatus @default(DRAFT)
-  isPublished           Boolean     @default(false)
-  publishedAt           DateTime?
-  totalEnrollments      Int         @default(0)
-  totalRevenue          Decimal     @default(0) @db.Decimal(10, 2)
-  rating                Decimal     @default(0) @db.Decimal(3, 2)
-  totalReviews          Int         @default(0)
-  createdAt             DateTime    @default(now())
-  updatedAt             DateTime    @updatedAt
-  
-  instructor            User        @relation("CourseInstructor", fields: [instructorId], references: [id])
-  category              Category    @relation(fields: [categoryId], references: [id])
-  sections              Section[]
-  enrollments           Enrollment[]
-  reviews               Review[]
-  wishlistItems         Wishlist[]
-  coupons               Coupon[]
-  analytics             CourseAnalytics?
+  id               String       @id @default(cuid())
+  title            String
+  slug             String       @unique
+  description      String
+  shortDescription String?
+  thumbnail        String?
+  previewVideo     String?
+  instructorId     String
+  categoryId       String
+  price            Decimal      @db.Decimal(10, 2)
+  discountPrice    Decimal?     @db.Decimal(10, 2)
+  currency         String       @default("USD")
+  level            CourseLevel  @default(BEGINNER)
+  duration         Int?
+  language         String       @default("en")
+  requirements     String[]
+  objectives       String[]
+  tags             String[]
+  status           CourseStatus @default(DRAFT)
+  isPublished      Boolean      @default(false)
+  publishedAt      DateTime?
+  totalEnrollments Int          @default(0)
+  totalRevenue     Decimal      @default(0) @db.Decimal(10, 2)
+  rating           Decimal      @default(0) @db.Decimal(3, 2)
+  totalReviews     Int          @default(0)
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
 
+  instructor     User                 @relation("CourseInstructor", fields: [instructorId], references: [id])
+  category       Category             @relation(fields: [categoryId], references: [id])
+  sections       Section[]
+  enrollments    Enrollment[]
+  reviews        Review[]
+  wishlistItems  Wishlist[]
+  coupons        Coupon[]
+  analytics      CourseAnalytics?
+  announcements  CourseAnnouncement[]
+  liveSessions   LiveSession[]        @relation("CourseLiveSessions")
+
+  @@index([status, isPublished])
+  @@index([instructorId])
+  @@index([categoryId])
+  @@index([rating])
   @@map("courses")
 }
 
 model Section {
-  id                    String   @id @default(cuid())
-  title                 String
-  description           String?
-  courseId              String
-  sortOrder             Int
-  isPublished           Boolean  @default(false)
-  createdAt             DateTime @default(now())
-  updatedAt             DateTime @updatedAt
-  
-  course                Course   @relation(fields: [courseId], references: [id], onDelete: Cascade)
-  lessons               Lesson[]
+  id          String   @id @default(cuid())
+  title       String
+  description String?
+  courseId    String
+  sortOrder   Int
+  isPublished Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 
+  course  Course   @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  lessons Lesson[]
+
+  @@index([courseId, sortOrder])
   @@map("sections")
 }
 
 model Lesson {
-  id                    String   @id @default(cuid())
-  title                 String
-  description           String?
-  sectionId             String
-  sortOrder             Int
-  videoUrl              String?
-  duration              Int?     // in seconds (add this field)
-  videoDuration         Int?     // in seconds
-  videoSize             BigInt?  // in bytes
-  isPreview             Boolean  @default(false)
-  isPublished           Boolean  @default(false)
-  createdAt             DateTime @default(now())
-  updatedAt             DateTime @updatedAt
-  
-  section               Section  @relation(fields: [sectionId], references: [id], onDelete: Cascade)
-  attachments           Attachment[]
-  progress              LessonProgress[]
-  videos                Video[]  // Add relation to videos
+  id            String    @id @default(cuid())
+  title         String
+  description   String?
+  sectionId     String
+  sortOrder     Int
+  videoUrl      String?
+  duration      Int?
+  videoDuration Int?
+  videoSize     BigInt?
+  isPreview     Boolean   @default(false)
+  isPublished   Boolean   @default(false)
+  releaseAt     DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
 
+  section     Section          @relation(fields: [sectionId], references: [id], onDelete: Cascade)
+  attachments Attachment[]
+  progress    LessonProgress[]
+  videos      Video[]
+  quiz        Quiz?
+  notes       StudentNote[]
+
+  @@index([sectionId, sortOrder])
   @@map("lessons")
 }
 
@@ -304,393 +332,627 @@ model Video {
   thumbnailUrl          String?
   s3Key                 String
   status                VideoStatus @default(PENDING)
-  duration              Int?        // in seconds
-  size                  BigInt?     // in bytes
+  duration              Int?
+  size                  BigInt?
   lessonId              String?
   errorMessage          String?
   processingStartedAt   DateTime?
   processingCompletedAt DateTime?
   createdAt             DateTime    @default(now())
   updatedAt             DateTime    @updatedAt
-  
-  lesson                Lesson?     @relation(fields: [lessonId], references: [id], onDelete: Cascade)
-  variants              VideoVariant[]
 
+  lesson   Lesson?       @relation(fields: [lessonId], references: [id], onDelete: Cascade)
+  variants VideoVariant[]
+
+  @@index([lessonId])
+  @@index([status])
   @@map("videos")
 }
 
 model VideoVariant {
-  id                    String      @id @default(cuid())
-  videoId               String
-  quality               String      // 360p, 480p, 720p, 1080p
-  s3Url                 String
-  s3Key                 String
-  bitrate               Int
-  resolution            String      // 640x360, 854x480, etc.
-  fileSize              BigInt?
-  duration              Int?        // in seconds
-  createdAt             DateTime    @default(now())
-  updatedAt             DateTime    @updatedAt
-  
-  video                 Video       @relation(fields: [videoId], references: [id], onDelete: Cascade)
+  id         String   @id @default(cuid())
+  videoId    String
+  quality    String
+  s3Url      String
+  s3Key      String
+  bitrate    Int
+  resolution String
+  fileSize   BigInt?
+  duration   Int?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
 
+  video Video @relation(fields: [videoId], references: [id], onDelete: Cascade)
+
+  @@index([videoId, quality])
   @@map("video_variants")
 }
 
 model Attachment {
-  id                    String   @id @default(cuid())
-  name                  String
-  originalName          String
-  fileUrl               String
-  fileType              String
-  fileSize              BigInt
-  mimeType              String
-  lessonId              String?
-  courseId              String?
-  createdAt             DateTime @default(now())
-  updatedAt             DateTime @updatedAt
-  
-  lesson                Lesson?  @relation(fields: [lessonId], references: [id], onDelete: Cascade)
+  id           String   @id @default(cuid())
+  name         String
+  originalName String
+  fileUrl      String
+  fileType     String
+  fileSize     BigInt
+  mimeType     String
+  lessonId     String?
+  courseId     String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  lesson Lesson? @relation(fields: [lessonId], references: [id], onDelete: Cascade)
 
   @@map("attachments")
 }
 
-// Enrollment & Progress
+// ─── Enrollments & Progress ───────────────────────────────────────────────────
+
 model Enrollment {
-  id                    String           @id @default(cuid())
-  userId                String
-  courseId              String
-  price                 Decimal          @db.Decimal(10, 2)
-  currency              String           @default("USD")
-  status                EnrollmentStatus @default(ACTIVE)
-  progressPercentage    Decimal          @default(0) @db.Decimal(5, 2)
-  completedAt           DateTime?
-  refundedAt            DateTime?
-  enrolledAt            DateTime         @default(now())
-  createdAt             DateTime         @default(now())
-  updatedAt             DateTime         @updatedAt
-  
-  user                  User             @relation(fields: [userId], references: [id])
-  course                Course           @relation(fields: [courseId], references: [id])
-  lessonProgress        LessonProgress[]
-  certificate           Certificate?
-  
+  id                 String           @id @default(cuid())
+  userId             String
+  courseId           String
+  price              Decimal          @db.Decimal(10, 2)
+  currency           String           @default("USD")
+  status             EnrollmentStatus @default(ACTIVE)
+  progressPercentage Decimal          @default(0) @db.Decimal(5, 2)
+  completedAt        DateTime?
+  refundedAt         DateTime?
+  enrolledAt         DateTime         @default(now())
+  createdAt          DateTime         @default(now())
+  updatedAt          DateTime         @updatedAt
+
+  user           User             @relation(fields: [userId], references: [id])
+  course         Course           @relation(fields: [courseId], references: [id])
+  lessonProgress LessonProgress[]
+  certificate    Certificate?
+
   @@unique([userId, courseId])
+  @@index([userId])
+  @@index([courseId])
   @@map("enrollments")
 }
 
 model LessonProgress {
-  id                    String     @id @default(cuid())
-  enrollmentId          String
-  lessonId              String
-  isCompleted           Boolean    @default(false)
-  watchTime             Int        @default(0) // in seconds
-  completedAt           DateTime?
-  createdAt             DateTime   @default(now())
-  updatedAt             DateTime   @updatedAt
-  
-  enrollment            Enrollment @relation(fields: [enrollmentId], references: [id], onDelete: Cascade)
-  lesson                Lesson     @relation(fields: [lessonId], references: [id], onDelete: Cascade)
-  
+  id           String    @id @default(cuid())
+  enrollmentId String
+  lessonId     String
+  isCompleted  Boolean   @default(false)
+  watchTime    Int       @default(0)
+  completedAt  DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  enrollment Enrollment @relation(fields: [enrollmentId], references: [id], onDelete: Cascade)
+  lesson     Lesson     @relation(fields: [lessonId], references: [id], onDelete: Cascade)
+
   @@unique([enrollmentId, lessonId])
+  @@index([enrollmentId])
   @@map("lesson_progress")
 }
 
-// Live Sessions
+// ─── Live Sessions ─────────────────────────────────────────────────────────────
+
 model AvailabilitySlot {
-  id                    String   @id @default(cuid())
-  instructorId          String
-  dayOfWeek             Int      // 0-6 (Sunday to Saturday)
-  startTime             String   // "09:00"
-  endTime               String   // "17:00"
-  timezone              String
-  sessionDuration       Int      // in minutes
-  maxStudents           Int      @default(1)
-  isActive              Boolean  @default(true)
-  createdAt             DateTime @default(now())
-  updatedAt             DateTime @updatedAt
-  
-  instructor            InstructorProfile @relation(fields: [instructorId], references: [id], onDelete: Cascade)
+  id              String   @id @default(cuid())
+  instructorId    String
+  dayOfWeek       Int
+  startTime       String
+  endTime         String
+  timezone        String
+  sessionDuration Int
+  maxStudents     Int      @default(1)
+  isActive        Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  instructor InstructorProfile @relation(fields: [instructorId], references: [id], onDelete: Cascade)
 
   @@map("availability_slots")
 }
 
 model SessionRequest {
-  id                    String        @id @default(cuid())
-  studentId             String
-  instructorId          String
-  title                 String
-  description           String?
-  preferredDate         DateTime
-  duration              Int           // in minutes
-  hourlyRate            Decimal       @db.Decimal(10, 2)
-  totalAmount           Decimal       @db.Decimal(10, 2)
-  currency              String        @default("USD")
-  status                SessionStatus @default(SCHEDULED)
-  message               String?
-  createdAt             DateTime      @default(now())
-  updatedAt             DateTime      @updatedAt
-  
-  student               User          @relation(fields: [studentId], references: [id])
-  liveSession           LiveSession?
+  id            String        @id @default(cuid())
+  studentId     String
+  instructorId  String
+  liveSessionId String?                          // application to an instructor-created session
+  title         String
+  description   String?
+  preferredDate DateTime?                        // optional — not needed for group session applications
+  duration      Int           @default(60)
+  hourlyRate    Decimal       @db.Decimal(10, 2) @default(0)
+  totalAmount   Decimal       @db.Decimal(10, 2) @default(0)
+  currency      String        @default("USD")
+  status        SessionStatus @default(SCHEDULED)
+  message       String?
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
 
+  student       User         @relation("StudentRequests", fields: [studentId], references: [id])
+  instructor    User         @relation("InstructorRequests", fields: [instructorId], references: [id])
+  liveSession   LiveSession? @relation("SessionFromRequest")
+  targetSession LiveSession? @relation("SessionApplications", fields: [liveSessionId], references: [id])
+
+  @@index([instructorId, status])
+  @@index([studentId])
+  @@index([liveSessionId])
   @@map("session_requests")
 }
 
 model LiveSession {
-  id                    String        @id @default(cuid())
-  sessionRequestId      String        @unique
-  instructorId          String
-  studentId             String
-  title                 String
-  description           String?
-  scheduledAt           DateTime
-  startedAt             DateTime?
-  endedAt               DateTime?
-  duration              Int           // in minutes
-  hourlyRate            Decimal       @db.Decimal(10, 2)
-  totalAmount           Decimal       @db.Decimal(10, 2)
-  currency              String        @default("USD")
-  status                SessionStatus @default(SCHEDULED)
-  roomId                String?       // LiveKit room ID
-  recordingUrl          String?
-  meetingNotes          String?
-  createdAt             DateTime      @default(now())
-  updatedAt             DateTime      @updatedAt
-  
-  sessionRequest        SessionRequest @relation(fields: [sessionRequestId], references: [id])
-  instructor            User          @relation("SessionInstructor", fields: [instructorId], references: [id])
-  student               User          @relation("SessionStudent", fields: [studentId], references: [id])
-  
+  id               String        @id @default(cuid())
+  sessionRequestId String?       @unique          // null for instructor-created group sessions
+  instructorId     String
+  studentId        String?                        // null for group sessions
+  courseId         String?                        // optional link to a course
+  title            String
+  description      String?
+  scheduledAt      DateTime
+  startedAt        DateTime?
+  endedAt          DateTime?
+  duration         Int
+  maxStudents      Int           @default(30)     // max accepted applicants
+  isPublic         Boolean       @default(true)   // visible to students for browsing
+  hourlyRate       Decimal       @db.Decimal(10, 2) @default(0)
+  totalAmount      Decimal       @db.Decimal(10, 2) @default(0)
+  currency         String        @default("USD")
+  status           SessionStatus @default(SCHEDULED)
+  roomId           String?
+  recordingUrl     String?
+  meetingNotes     String?
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+
+  sessionRequest SessionRequest? @relation("SessionFromRequest", fields: [sessionRequestId], references: [id])
+  instructor     User            @relation("SessionInstructor", fields: [instructorId], references: [id])
+  student        User?           @relation("SessionStudent", fields: [studentId], references: [id])
+  course         Course?         @relation("CourseLiveSessions", fields: [courseId], references: [id])
+  applications   SessionRequest[] @relation("SessionApplications")
+
+  @@index([instructorId, status])
+  @@index([scheduledAt])
+  @@index([courseId])
   @@map("live_sessions")
 }
 
-// Payment System
+// ─── Payments ─────────────────────────────────────────────────────────────────
+
 model Payment {
-  id                    String        @id @default(cuid())
+  id                    String          @id @default(cuid())
   userId                String
-  amount                Decimal       @db.Decimal(10, 2)
-  currency              String        @default("USD")
-  status                PaymentStatus @default(PENDING)
+  amount                Decimal         @db.Decimal(10, 2)
+  currency              String          @default("USD")
+  status                PaymentStatus   @default(PENDING)
   type                  TransactionType
   description           String?
-  stripePaymentIntentId String?       @unique
+  stripePaymentIntentId String?         @unique
   stripeCustomerId      String?
   refundId              String?
   metadata              Json?
-  createdAt             DateTime      @default(now())
-  updatedAt             DateTime      @updatedAt
-  
-  user                  User          @relation(fields: [userId], references: [id])
+  createdAt             DateTime        @default(now())
+  updatedAt             DateTime        @updatedAt
 
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@index([status])
   @@map("payments")
 }
 
 model Payout {
-  id                    String   @id @default(cuid())
-  instructorId          String
-  amount                Decimal  @db.Decimal(10, 2)
-  currency              String   @default("USD")
-  status                String   @default("pending")
-  stripePayoutId        String?  @unique
-  description           String?
-  processedAt           DateTime?
-  createdAt             DateTime @default(now())
-  updatedAt             DateTime @updatedAt
-  
-  instructor            InstructorProfile @relation(fields: [instructorId], references: [id])
+  id             String    @id @default(cuid())
+  instructorId   String
+  amount         Decimal   @db.Decimal(10, 2)
+  currency       String    @default("USD")
+  status         String    @default("pending")
+  stripePayoutId String?   @unique
+  description    String?
+  processedAt    DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
 
+  instructor InstructorProfile @relation(fields: [instructorId], references: [id])
+
+  @@index([instructorId, status])
   @@map("payouts")
 }
 
-// Reviews & Ratings
+// ─── Reviews ──────────────────────────────────────────────────────────────────
+
 model Review {
-  id                    String   @id @default(cuid())
-  userId                String
-  courseId              String
-  rating                Int      // 1-5
-  title                 String?
-  content               String?
-  isVerifiedPurchase    Boolean  @default(false)
-  isHelpful             Int      @default(0)
-  createdAt             DateTime @default(now())
-  updatedAt             DateTime @updatedAt
-  
-  user                  User     @relation(fields: [userId], references: [id])
-  course                Course   @relation(fields: [courseId], references: [id], onDelete: Cascade)
-  
+  id                String   @id @default(cuid())
+  userId            String
+  courseId          String
+  rating            Int
+  title             String?
+  content           String?
+  isVerifiedPurchase Boolean @default(false)
+  isHelpful         Int      @default(0)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  user   User   @relation(fields: [userId], references: [id])
+  course Course @relation(fields: [courseId], references: [id], onDelete: Cascade)
+
   @@unique([userId, courseId])
+  @@index([courseId, rating])
   @@map("reviews")
 }
 
-// Communication
+// ─── Communication ────────────────────────────────────────────────────────────
+
 model Chat {
-  id                    String   @id @default(cuid())
-  name                  String?
-  isGroupChat           Boolean  @default(false)
-  createdAt             DateTime @default(now())
-  updatedAt             DateTime @updatedAt
-  
-  participants          ChatParticipant[]
-  messages              ChatMessage[]
+  id          String   @id @default(cuid())
+  name        String?
+  isGroupChat Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  participants ChatParticipant[]
+  messages     ChatMessage[]
 
   @@map("chats")
 }
 
 model ChatParticipant {
-  id                    String   @id @default(cuid())
-  chatId                String
-  userId                String
-  joinedAt              DateTime @default(now())
-  lastReadAt            DateTime?
-  
-  chat                  Chat     @relation(fields: [chatId], references: [id], onDelete: Cascade)
-  user                  User     @relation(fields: [userId], references: [id])
-  
+  id         String    @id @default(cuid())
+  chatId     String
+  userId     String
+  joinedAt   DateTime  @default(now())
+  lastReadAt DateTime?
+
+  chat Chat @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id])
+
   @@unique([chatId, userId])
+  @@index([userId])
   @@map("chat_participants")
 }
 
 model ChatMessage {
-  id                    String   @id @default(cuid())
-  chatId                String
-  senderId              String
-  content               String
-  messageType           String   @default("text")
-  attachmentUrl         String?
-  replyToId             String?
-  isEdited              Boolean  @default(false)
-  createdAt             DateTime @default(now())
-  updatedAt             DateTime @updatedAt
-  
-  chat                  Chat     @relation(fields: [chatId], references: [id], onDelete: Cascade)
-  sender                User     @relation("ChatMessageSender", fields: [senderId], references: [id], onDelete: Cascade)
-  replyTo               ChatMessage? @relation("MessageReply", fields: [replyToId], references: [id])
-  replies               ChatMessage[] @relation("MessageReply")
+  id            String   @id @default(cuid())
+  chatId        String
+  senderId      String
+  content       String
+  messageType   String   @default("text")
+  attachmentUrl String?
+  replyToId     String?
+  isEdited      Boolean  @default(false)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
 
+  chat    Chat         @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  sender  User         @relation("ChatMessageSender", fields: [senderId], references: [id], onDelete: Cascade)
+  replyTo ChatMessage? @relation("MessageReply", fields: [replyToId], references: [id])
+  replies ChatMessage[] @relation("MessageReply")
+
+  @@index([chatId, createdAt])
   @@map("chat_messages")
 }
 
-// Notifications
-model Notification {
-  id                    String           @id @default(cuid())
-  userId                String
-  title                 String
-  message               String
-  type                  NotificationType
-  isRead                Boolean          @default(false)
-  actionUrl             String?
-  metadata              Json?
-  createdAt             DateTime         @default(now())
-  
-  user                  User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+// ─── Notifications ────────────────────────────────────────────────────────────
 
+model Notification {
+  id        String           @id @default(cuid())
+  userId    String
+  title     String
+  message   String
+  type      NotificationType
+  isRead    Boolean          @default(false)
+  actionUrl String?
+  metadata  Json?
+  createdAt DateTime         @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, isRead])
+  @@index([userId, createdAt])
   @@map("notifications")
 }
 
-// Wishlist & Favorites
+// ─── Wishlist ─────────────────────────────────────────────────────────────────
+
 model Wishlist {
-  id                    String   @id @default(cuid())
-  userId                String
-  courseId              String
-  createdAt             DateTime @default(now())
-  
-  user                  User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  course                Course   @relation(fields: [courseId], references: [id], onDelete: Cascade)
-  
+  id        String   @id @default(cuid())
+  userId    String
+  courseId  String
+  createdAt DateTime @default(now())
+
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  course Course @relation(fields: [courseId], references: [id], onDelete: Cascade)
+
   @@unique([userId, courseId])
   @@map("wishlists")
 }
 
-// Certificates
-model Certificate {
-  id                    String     @id @default(cuid())
-  enrollmentId          String     @unique
-  userId                String
-  courseId              String
-  certificateNumber     String     @unique
-  issuedAt              DateTime   @default(now())
-  expiresAt             DateTime?
-  pdfUrl                String?
-  
-  enrollment            Enrollment @relation(fields: [enrollmentId], references: [id], onDelete: Cascade)
-  user                  User       @relation(fields: [userId], references: [id])
+// ─── Certificates ─────────────────────────────────────────────────────────────
 
+model Certificate {
+  id                String    @id @default(cuid())
+  enrollmentId      String    @unique
+  userId            String
+  courseId          String
+  certificateNumber String    @unique
+  issuedAt          DateTime  @default(now())
+  expiresAt         DateTime?
+  pdfUrl            String?
+
+  enrollment Enrollment @relation(fields: [enrollmentId], references: [id], onDelete: Cascade)
+  user       User       @relation(fields: [userId], references: [id])
+
+  @@index([userId])
   @@map("certificates")
 }
 
-// Coupons & Discounts
-model Coupon {
-  id                    String   @id @default(cuid())
-  code                  String   @unique
-  name                  String
-  description           String?
-  discountType          String   // "percentage" or "fixed"
-  discountValue         Decimal  @db.Decimal(10, 2)
-  minimumAmount         Decimal? @db.Decimal(10, 2)
-  maximumDiscount       Decimal? @db.Decimal(10, 2)
-  usageLimit            Int?
-  usedCount             Int      @default(0)
-  isActive              Boolean  @default(true)
-  validFrom             DateTime
-  validUntil            DateTime
-  applicableCourses     String[] // Course IDs array
-  createdAt             DateTime @default(now())
-  updatedAt             DateTime @updatedAt
-  
-  courses               Course[]
+// ─── Coupons ──────────────────────────────────────────────────────────────────
 
+model Coupon {
+  id                String    @id @default(cuid())
+  code              String    @unique
+  name              String
+  description       String?
+  discountType      String
+  discountValue     Decimal   @db.Decimal(10, 2)
+  minimumAmount     Decimal?  @db.Decimal(10, 2)
+  maximumDiscount   Decimal?  @db.Decimal(10, 2)
+  usageLimit        Int?
+  usedCount         Int       @default(0)
+  isActive          Boolean   @default(true)
+  validFrom         DateTime
+  validUntil        DateTime
+  applicableCourses String[]
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  courses Course[]
+
+  @@index([code, isActive])
   @@map("coupons")
 }
 
-// Analytics & Reporting
+// ─── Analytics ────────────────────────────────────────────────────────────────
+
 model UserAnalytics {
-  id                    String   @id @default(cuid())
-  userId                String   @unique
-  totalCoursesEnrolled  Int      @default(0)
-  totalCoursesCompleted Int      @default(0)
-  totalWatchTime        Int      @default(0) // in minutes
-  totalSpent            Decimal  @default(0) @db.Decimal(10, 2)
-  averageRating         Decimal  @default(0) @db.Decimal(3, 2)
+  id                    String    @id @default(cuid())
+  userId                String    @unique
+  totalCoursesEnrolled  Int       @default(0)
+  totalCoursesCompleted Int       @default(0)
+  totalWatchTime        Int       @default(0)
+  totalSpent            Decimal   @default(0) @db.Decimal(10, 2)
+  averageRating         Decimal   @default(0) @db.Decimal(3, 2)
   lastActivityAt        DateTime?
-  streakDays            Int      @default(0)
-  longestStreak         Int      @default(0)
-  createdAt             DateTime @default(now())
-  updatedAt             DateTime @updatedAt
-  
-  user                  User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  streakDays            Int       @default(0)
+  longestStreak         Int       @default(0)
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@map("user_analytics")
 }
 
 model CourseAnalytics {
-  id                    String   @id @default(cuid())
-  courseId              String   @unique
-  totalViews            Int      @default(0)
-  totalEnrollments      Int      @default(0)
-  totalRevenue          Decimal  @default(0) @db.Decimal(10, 2)
-  completionRate        Decimal  @default(0) @db.Decimal(5, 2)
-  averageWatchTime      Int      @default(0) // in minutes
-  averageRating         Decimal  @default(0) @db.Decimal(3, 2)
-  totalReviews          Int      @default(0)
-  conversionRate        Decimal  @default(0) @db.Decimal(5, 2)
-  createdAt             DateTime @default(now())
-  updatedAt             DateTime @updatedAt
-  
-  course                Course   @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  id               String   @id @default(cuid())
+  courseId         String   @unique
+  totalViews       Int      @default(0)
+  totalEnrollments Int      @default(0)
+  totalRevenue     Decimal  @default(0) @db.Decimal(10, 2)
+  completionRate   Decimal  @default(0) @db.Decimal(5, 2)
+  averageWatchTime Int      @default(0)
+  averageRating    Decimal  @default(0) @db.Decimal(3, 2)
+  totalReviews     Int      @default(0)
+  conversionRate   Decimal  @default(0) @db.Decimal(5, 2)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  course Course @relation(fields: [courseId], references: [id], onDelete: Cascade)
 
   @@map("course_analytics")
 }
 
-// System Configuration
+// ─── Push notifications ───────────────────────────────────────────────────────
+
+model DeviceToken {
+  id        String   @id @default(cuid())
+  userId    String
+  token     String
+  platform  String   @default("android") // android | ios | web
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, token])
+  @@index([userId])
+  @@map("device_tokens")
+}
+
+// ─── System ───────────────────────────────────────────────────────────────────
+
 model SystemSettings {
-  id                    String   @id @default(cuid())
-  key                   String   @unique
-  value                 String
-  description           String?
-  isPublic              Boolean  @default(false)
-  createdAt             DateTime @default(now())
-  updatedAt             DateTime @updatedAt
+  id          String   @id @default(cuid())
+  key         String   @unique
+  value       String
+  description String?
+  isPublic    Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 
   @@map("system_settings")
+}
+
+// ─── Quizzes & Assessments ────────────────────────────────────────────────────
+
+model Quiz {
+  id           String   @id @default(cuid())
+  lessonId     String   @unique
+  title        String
+  description  String?
+  passingScore Int      @default(70)
+  timeLimit    Int?
+  isPublished  Boolean  @default(false)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  lesson    Lesson         @relation(fields: [lessonId], references: [id], onDelete: Cascade)
+  questions QuizQuestion[]
+  attempts  QuizAttempt[]
+
+  @@map("quizzes")
+}
+
+model QuizQuestion {
+  id            String   @id @default(cuid())
+  quizId        String
+  questionText  String
+  questionType  String   @default("multiple_choice")
+  options       Json?
+  correctAnswer String
+  explanation   String?
+  points        Int      @default(1)
+  sortOrder     Int      @default(0)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  quiz    Quiz         @relation(fields: [quizId], references: [id], onDelete: Cascade)
+  answers QuizAnswer[]
+
+  @@index([quizId])
+  @@map("quiz_questions")
+}
+
+model QuizAttempt {
+  id           String    @id @default(cuid())
+  quizId       String
+  userId       String
+  enrollmentId String?
+  score        Decimal   @default(0) @db.Decimal(5, 2)
+  isPassed     Boolean   @default(false)
+  timeSpent    Int?
+  startedAt    DateTime  @default(now())
+  completedAt  DateTime?
+
+  quiz    Quiz         @relation(fields: [quizId], references: [id], onDelete: Cascade)
+  user    User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  answers QuizAnswer[]
+
+  @@index([quizId, userId])
+  @@map("quiz_attempts")
+}
+
+model QuizAnswer {
+  id         String @id @default(cuid())
+  attemptId  String
+  questionId String
+  answer     String
+  isCorrect  Boolean @default(false)
+  pointsEarned Int   @default(0)
+
+  attempt  QuizAttempt  @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+  question QuizQuestion @relation(fields: [questionId], references: [id], onDelete: Cascade)
+
+  @@map("quiz_answers")
+}
+
+// ─── Course Announcements ─────────────────────────────────────────────────────
+
+model CourseAnnouncement {
+  id           String   @id @default(cuid())
+  courseId     String
+  instructorId String
+  title        String
+  content      String
+  isPublished  Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  course     Course @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  instructor User   @relation(fields: [instructorId], references: [id])
+
+  @@index([courseId])
+  @@map("course_announcements")
+}
+
+// ─── Student Notes ────────────────────────────────────────────────────────────
+
+model StudentNote {
+  id        String   @id @default(cuid())
+  userId    String
+  lessonId  String
+  content   String
+  timestamp Int?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  lesson Lesson @relation(fields: [lessonId], references: [id], onDelete: Cascade)
+
+  @@index([userId, lessonId])
+  @@map("student_notes")
+}
+
+// ─── Content Moderation ───────────────────────────────────────────────────────
+
+model ContentReport {
+  id         String    @id @default(cuid())
+  reporterId String
+  targetType String
+  targetId   String
+  reason     String
+  details    String?
+  status     String    @default("pending")
+  reviewedBy String?
+  reviewedAt DateTime?
+  resolution String?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  reporter User @relation(fields: [reporterId], references: [id], onDelete: Cascade)
+
+  @@index([status])
+  @@index([targetType, targetId])
+  @@map("content_reports")
+}
+
+// ─── Instructor Applications ──────────────────────────────────────────────────
+
+model InstructorApplication {
+  id                 String    @id @default(cuid())
+  userId             String    @unique
+  motivation         String
+  teachingExperience String?
+  subjectExpertise   String[]
+  sampleContentUrl   String?
+  linkedinUrl        String?
+  status             String    @default("pending")
+  reviewedBy         String?
+  reviewedAt         DateTime?
+  rejectionReason    String?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([status])
+  @@map("instructor_applications")
+}
+
+// ─── Email Preferences ────────────────────────────────────────────────────────
+
+model EmailPreference {
+  id                  String   @id @default(cuid())
+  userId              String   @unique
+  marketingEmails     Boolean  @default(true)
+  courseUpdates       Boolean  @default(true)
+  sessionReminders    Boolean  @default(true)
+  paymentReceipts     Boolean  @default(true)
+  newEnrollmentAlerts Boolean  @default(true)
+  reviewNotifications Boolean  @default(true)
+  unsubscribeToken    String   @unique @default(cuid())
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("email_preferences")
 }

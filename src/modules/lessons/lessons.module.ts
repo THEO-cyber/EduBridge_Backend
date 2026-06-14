@@ -1,6 +1,10 @@
 import { Module } from '@nestjs/common';
+import { LessonsController } from './lessons.controller';
+import { LessonsService } from './lessons.service';
 
 @Module({
-  // Placeholder modules - will be implemented
+  controllers: [LessonsController],
+  providers: [LessonsService],
+  exports: [LessonsService],
 })
 export class LessonsModule {}

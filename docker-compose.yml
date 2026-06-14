@@ -1,0 +1,171 @@
+version: '3.9'
+
+services:
+  # ── API ─────────────────────────────────────────────────────────────────────
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runner
+    container_name: edubridge-api
+    restart: unless-stopped
+    ports:
+      - '${PORT:-3000}:3000'
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-edu}:${POSTGRES_PASSWORD:-edu}@postgres:5432/${POSTGRES_DB:-edubridge}
+      DIRECT_URL: postgresql://${POSTGRES_USER:-edu}:${POSTGRES_PASSWORD:-edu}@postgres:5432/${POSTGRES_DB:-edubridge}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      S3_ENDPOINT: http://minio:9000
+      AWS_S3_BUCKET: ${AWS_S3_BUCKET:-edubridge-videos}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-minioadmin}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-minioadmin}
+      AWS_REGION: us-east-1
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    volumes:
+      - uploads:/app/uploads
+    networks:
+      - internal
+
+  # ── Worker (video processing) ────────────────────────────────────────────────
+  # Run a second API instance as a BullMQ worker.
+  # In Kubernetes you would deploy this as a separate Deployment with a different
+  # CMD, but for Docker Compose one replica is enough for dev/staging.
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runner
+    container_name: edubridge-worker
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-edu}:${POSTGRES_PASSWORD:-edu}@postgres:5432/${POSTGRES_DB:-edubridge}
+      DIRECT_URL: postgresql://${POSTGRES_USER:-edu}:${POSTGRES_PASSWORD:-edu}@postgres:5432/${POSTGRES_DB:-edubridge}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      S3_ENDPOINT: http://minio:9000
+      AWS_S3_BUCKET: ${AWS_S3_BUCKET:-edubridge-videos}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-minioadmin}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-minioadmin}
+      AWS_REGION: us-east-1
+      # Workers do not need the HTTP port
+    depends_on:
+      - postgres
+      - redis
+    volumes:
+      - uploads:/app/uploads
+    networks:
+      - internal
+
+  # ── PostgreSQL ───────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: edubridge-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-edu}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-edu}
+      POSTGRES_DB: ${POSTGRES_DB:-edubridge}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-edu}']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - internal
+
+  # ── Redis ────────────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: edubridge-redis
+    restart: unless-stopped
+    command: redis-server --save 60 1 --loglevel warning
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - internal
+
+  # ── MinIO (S3-compatible object storage — replaces AWS S3) ──────────────────
+  minio:
+    image: minio/minio:latest
+    container_name: edubridge-minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${AWS_ACCESS_KEY_ID:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${AWS_SECRET_ACCESS_KEY:-minioadmin}
+    ports:
+      - '9000:9000'   # S3 API  — used by the backend
+      - '9001:9001'   # Web console — open http://localhost:9001 in browser
+    volumes:
+      - miniodata:/data
+    healthcheck:
+      test: ['CMD', 'mc', 'ready', 'local']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - internal
+
+  # ── MinIO bucket init (runs once, creates the bucket on first start) ─────────
+  minio-init:
+    image: minio/mc:latest
+    container_name: edubridge-minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      MINIO_ROOT_USER: ${AWS_ACCESS_KEY_ID:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${AWS_SECRET_ACCESS_KEY:-minioadmin123}
+      MINIO_BUCKET: ${AWS_S3_BUCKET:-edubridge-videos}
+    entrypoint: >
+      /bin/sh -c "
+        mc alias set local http://minio:9000 $${MINIO_ROOT_USER} $${MINIO_ROOT_PASSWORD};
+        mc mb --ignore-existing local/$${MINIO_BUCKET};
+        mc anonymous set download local/$${MINIO_BUCKET};
+        echo 'MinIO bucket ready: '$${MINIO_BUCKET};
+      "
+    networks:
+      - internal
+
+  # ── Prisma Studio (dev only) ─────────────────────────────────────────────────
+  studio:
+    image: node:20-alpine
+    container_name: edubridge-studio
+    profiles: ['dev']            # only starts with: docker compose --profile dev up
+    working_dir: /app
+    command: npx prisma studio
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-edu}:${POSTGRES_PASSWORD:-edu}@postgres:5432/${POSTGRES_DB:-edubridge}
+    ports:
+      - '5555:5555'
+    depends_on:
+      - postgres
+    networks:
+      - internal
+
+volumes:
+  pgdata:
+  redisdata:
+  miniodata:
+  uploads:
+
+networks:
+  internal:
+    driver: bridge

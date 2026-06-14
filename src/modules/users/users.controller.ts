@@ -98,6 +98,18 @@ export class UsersController {
     return this.usersService.updateInstructorProfile(user.id, updateDto);
   }
 
+  @Get('instructor/courses/:courseId/students')
+  @UseGuards(RolesGuard)
+  @Roles(Role.INSTRUCTOR)
+  @ApiOperation({ summary: "Get enrolled students with progress for instructor's course" })
+  async getCourseStudents(
+    @Param('courseId') courseId: string,
+    @CurrentUser() user: User,
+    @Query() paginationDto: PaginationDto,
+  ) {
+    return this.usersService.getCourseStudents(user.id, courseId, paginationDto);
+  }
+
   @Delete('account')
   @ApiOperation({ summary: 'Delete user account' })
   async deleteAccount(@CurrentUser() user: User) {

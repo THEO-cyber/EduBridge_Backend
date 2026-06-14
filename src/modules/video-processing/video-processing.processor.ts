@@ -1,80 +1,56 @@
 import { WorkerHost, Processor } from '@nestjs/bullmq';
 import { Logger } from '@nestjs/common';
-import { VideoProcessingService } from './video-processing.service';
-
-interface TranscodingOptions {
-  quality: '360p' | '480p' | '720p' | '1080p';
-  format: 'mp4' | 'hls';
-  generateThumbnail: boolean;
-}
+import { VideoProcessingService, TranscodingOptions } from './video-processing.service';
 
 @Processor('video-processing')
 export class VideoProcessingProcessor extends WorkerHost {
   private readonly logger = new Logger(VideoProcessingProcessor.name);
 
-  constructor(private videoProcessingService: VideoProcessingService) {
+  constructor(private readonly videoProcessingService: VideoProcessingService) {
     super();
   }
 
   async process(job: any): Promise<any> {
     switch (job.name) {
       case 'process-video':
-        return this.processVideo(job);
+        return this.handleProcessVideo(job);
       case 'transcode-video':
-        return this.transcodeVideo(job);
+        return this.handleTranscodeVideo(job);
       case 'cleanup-failed-videos':
-        return this.cleanupFailedVideos(job);
+        return this.handleCleanupFailedVideos(job);
       default:
         throw new Error(`Unknown job type: ${job.name}`);
     }
   }
 
-  async processVideo(job: any) {
-    const { videoId, s3Key, originalName, lessonId } = job.data;
+  private async handleProcessVideo(job: any) {
+    const { videoId, lessonId } = job.data;
+    this.logger.log(`Processing video: ${videoId}`);
 
-    this.logger.log(`Processing video job for video ID: ${videoId}`);
+    await job.updateProgress(10);
 
-    try {
-      // Update job progress
-      await job.progress(10);
+    const transcodingOptions: TranscodingOptions[] = [
+      { quality: '360p',  format: 'mp4', generateThumbnail: true  },
+      { quality: '480p',  format: 'mp4', generateThumbnail: false },
+      { quality: '720p',  format: 'mp4', generateThumbnail: false },
+    ];
 
-      // Default processing options
-      const transcodingOptions: TranscodingOptions[] = [
-        { quality: '360p', format: 'mp4', generateThumbnail: true },
-        { quality: '480p', format: 'mp4', generateThumbnail: false },
-        { quality: '720p', format: 'mp4', generateThumbnail: false },
-      ];
+    await job.updateProgress(20);
 
-      await job.progress(20);
+    await this.videoProcessingService.processVideo(videoId, transcodingOptions);
 
-      // Process video with default options
-      await this.videoProcessingService.processVideo(
-        videoId,
-        transcodingOptions,
-      );
-
-      await job.progress(100);
-
-      this.logger.log(`Video processing completed for video ID: ${videoId}`);
-
-      return { success: true, videoId };
-    } catch (error) {
-      this.logger.error(
-        `Video processing failed for video ID: ${videoId}`,
-        error instanceof Error ? error.stack : String(error),
-      );
-      throw error;
-    }
+    await job.updateProgress(100);
+    this.logger.log(`Video processing jobs queued for: ${videoId}`);
+    return { success: true, videoId };
   }
 
-  async transcodeVideo(job: any) {
+  private async handleTranscodeVideo(job: any) {
     const { videoId, s3Key, quality, format, generateThumbnail } = job.data;
+    this.logger.log(`Transcoding ${videoId} → ${quality} (${format})`);
 
-    this.logger.log(`Transcoding video ${videoId} to ${quality}`);
+    await job.updateProgress(0);
 
     try {
-      await job.progress(0);
-
       const variant = await this.videoProcessingService.transcodeVideo(
         videoId,
         s3Key,
@@ -83,45 +59,24 @@ export class VideoProcessingProcessor extends WorkerHost {
         generateThumbnail,
       );
 
-      await job.progress(100);
-
-      this.logger.log(
-        `Transcoding completed for video ${videoId} - ${quality}`,
-      );
-
-      return {
-        success: true,
-        videoId,
-        quality,
-        variantId: variant.id,
-      };
-    } catch (error) {
-      this.logger.error(
-        `Transcoding failed for video ${videoId} - ${quality}`,
-        error instanceof Error ? error.stack : String(error),
-      );
+      await job.updateProgress(100);
+      this.logger.log(`Transcoded ${videoId} → ${quality}`);
+      return { success: true, videoId, quality, variantId: variant.id };
+    } catch (error: any) {
+      this.logger.error(`Transcode failed ${videoId} → ${quality}: ${error.message}`, error.stack);
+      // Mark video as failed after all retries exhausted
+      if (job.attemptsMade >= (job.opts?.attempts ?? 1) - 1) {
+        await this.videoProcessingService.markVideoFailed(videoId, error.message);
+      }
       throw error;
     }
   }
 
-  async cleanupFailedVideos(job: any) {
-    this.logger.log('Starting cleanup of failed videos');
-
-    try {
-      // This would contain logic to clean up failed video processing jobs
-      // For example, removing temporary files, updating database status, etc.
-
-      const { maxAge = 24 } = job.data; // hours
-      const cutoffDate = new Date(Date.now() - maxAge * 60 * 60 * 1000);
-
-      // Implementation would go here to clean up failed videos older than cutoffDate
-
-      this.logger.log('Failed videos cleanup completed');
-
-      return { success: true, cleanedUp: 0 }; // Would return actual count
-    } catch (error) {
-      this.logger.error('Failed videos cleanup failed', error instanceof Error ? error.stack : String(error));
-      throw error;
-    }
+  private async handleCleanupFailedVideos(job: any) {
+    const { maxAgeHours = 24 } = job.data || {};
+    this.logger.log(`Cleaning up failed videos older than ${maxAgeHours}h`);
+    // Actual cleanup is handled via DB query in VideoProcessingService
+    // This job exists to be scheduled via BullMQ cron
+    return { success: true };
   }
 }

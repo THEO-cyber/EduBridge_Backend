@@ -5,6 +5,7 @@ import {
   Query,
   UseGuards,
   ParseIntPipe,
+  BadRequestException,
 } from '@nestjs/common';
 import {
   ApiTags,
@@ -52,7 +53,7 @@ export class AnalyticsController {
   @ApiOperation({ summary: 'Get platform overview analytics (Admin only)' })
   @ApiQuery({ name: 'startDate', required: false, type: String })
   @ApiQuery({ name: 'endDate', required: false, type: String })
-  async getPlatformOverview(@Query() dateRangeQuery: DateRangeQueryDto) {
+  async getPlatformOverview(@Query() dateRangeQuery: DateRangeQueryDto): Promise<any> {
     const dateRange =
       dateRangeQuery.startDate && dateRangeQuery.endDate
         ? {
@@ -75,9 +76,9 @@ export class AnalyticsController {
     required: false,
     enum: ['day', 'week', 'month'],
   })
-  async getEnrollmentTrends(@Query() trendsQuery: TrendsQueryDto) {
+  async getEnrollmentTrends(@Query() trendsQuery: TrendsQueryDto): Promise<any> {
     if (!trendsQuery.startDate || !trendsQuery.endDate) {
-      throw new Error('Start date and end date are required');
+      throw new BadRequestException('Start date and end date are required');
     }
 
     const dateRange = {
@@ -95,7 +96,7 @@ export class AnalyticsController {
   @Roles(Role.ADMIN)
   @Get('platform/categories')
   @ApiOperation({ summary: 'Get category analytics (Admin only)' })
-  async getCategoryAnalytics() {
+  async getCategoryAnalytics(): Promise<any> {
     return this.analyticsService.getCategoryAnalytics();
   }
 
@@ -121,7 +122,7 @@ export class AnalyticsController {
   async getInstructorAnalytics(
     @CurrentUser() user: User,
     @Query() dateRangeQuery: DateRangeQueryDto,
-  ) {
+  ): Promise<any> {
     const dateRange =
       dateRangeQuery.startDate && dateRangeQuery.endDate
         ? {
@@ -164,11 +165,11 @@ export class AnalyticsController {
     @Param('instructorId') instructorId: string,
     @Query() dateRangeQuery: DateRangeQueryDto,
     @CurrentUser() user: User,
-  ) {
+  ): Promise<any> {
     // Admins can view any instructor's analytics
     // Instructors can only view their own analytics
     if (user.role === Role.INSTRUCTOR && user.id !== instructorId) {
-      throw new Error('Instructors can only view their own analytics');
+      throw new BadRequestException('Instructors can only view their own analytics');
     }
 
     const dateRange =

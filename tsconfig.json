@@ -27,6 +27,6 @@
       "@/config/*": ["src/config/*"]
     }
   },
-  "include": ["src/**/*", "prisma/**/*"],
-  "exclude": ["node_modules", "dist", "coverage"]
+  "include": ["src/**/*", "prisma/**/*", "test/**/*"],
+  "exclude": ["node_modules", "dist", "coverage", "test", "**/*.spec.ts", "**/__tests__"]
 }

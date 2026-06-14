@@ -8,7 +8,7 @@ import { PrismaService } from '../../common/prisma/prisma.service';
 import { CreateCourseDto } from './dto/create-course.dto';
 import { UpdateCourseDto } from './dto/update-course.dto';
 import { PaginationDto } from '../../common/dto/pagination.dto';
-import { CourseStatus, CourseLevel, Role } from '@prisma/client';
+import { CourseStatus, CourseLevel, Role, EnrollmentStatus } from '@prisma/client';
 
 @Injectable()
 export class CoursesService {
@@ -234,18 +234,17 @@ export class CoursesService {
       throw new ForbiddenException('Course not accessible');
     }
 
-    // Check if user is enrolled (if userId provided)
+    // Check if user is actively enrolled (if userId provided)
     let isEnrolled = false;
     if (userId) {
       const enrollment = await this.prisma.enrollment.findUnique({
-        where: {
-          userId_courseId: {
-            userId,
-            courseId: id,
-          },
-        },
+        where: { userId_courseId: { userId, courseId: id } },
+        select: { status: true },
       });
-      isEnrolled = !!enrollment;
+      isEnrolled =
+        !!enrollment &&
+        (enrollment.status === EnrollmentStatus.ACTIVE ||
+          enrollment.status === EnrollmentStatus.COMPLETED);
     }
 
     return {
