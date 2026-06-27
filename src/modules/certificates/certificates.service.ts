@@ -36,12 +36,12 @@ export class CertificatesService {
     const certificates = await this.prisma.certificate.findMany({
       where: { userId },
       include: {
+        user:       { select: { firstName: true, lastName: true } },
         enrollment: { select: { enrolledAt: true, completedAt: true } },
       },
       orderBy: { issuedAt: 'desc' },
     });
 
-    // Build course info in a separate query
     const courseIds = certificates.map((c) => c.courseId);
     const courses = await this.prisma.course.findMany({
       where: { id: { in: courseIds } },
@@ -51,10 +51,21 @@ export class CertificatesService {
     });
     const courseMap = Object.fromEntries(courses.map((c) => [c.id, c]));
 
-    return certificates.map((cert) => ({
-      ...cert,
-      course: courseMap[cert.courseId] ?? null,
-    }));
+    return certificates.map((cert) => {
+      const course = courseMap[cert.courseId] ?? null;
+      return {
+        ...cert,
+        // Flat fields Flutter can use directly for the certificate card/screen
+        recipientName:  `${cert.user.firstName} ${cert.user.lastName}`,
+        courseTitle:    course?.title ?? 'Unknown Course',
+        instructorName: course?.instructor
+          ? `${course.instructor.firstName} ${course.instructor.lastName}`
+          : 'EduBridge',
+        issuedBy:       'EduBridge Academy',
+        signature:      'EduBridge Academy',
+        course,
+      };
+    });
   }
 
   async getCertificate(certificateId: string, userId: string) {
@@ -76,7 +87,22 @@ export class CertificatesService {
       },
     });
 
-    return { ...cert, course };
+    const recipientName  = `${cert.user.firstName} ${cert.user.lastName}`;
+    const courseTitle    = course?.title ?? 'Unknown Course';
+    const instructorName = course?.instructor
+      ? `${course.instructor.firstName} ${course.instructor.lastName}`
+      : 'EduBridge';
+
+    return {
+      ...cert,
+      // Flat fields Flutter can use directly to render the certificate screen
+      recipientName,
+      courseTitle,
+      instructorName,
+      issuedBy:  'EduBridge Academy',
+      signature: 'EduBridge Academy',
+      course,
+    };
   }
 
   async getCertificateByNumber(certNumber: string) {
@@ -90,15 +116,20 @@ export class CertificatesService {
 
     const course = await this.prisma.course.findUnique({
       where: { id: cert.courseId },
-      select: { title: true },
+      include: { instructor: { select: { firstName: true, lastName: true } } },
     });
 
     return {
-      valid: true,
+      valid:             true,
       certificateNumber: cert.certificateNumber,
-      recipientName: `${cert.user.firstName} ${cert.user.lastName}`,
-      courseTitle: course?.title ?? 'Unknown Course',
-      issuedAt: cert.issuedAt,
+      recipientName:     `${cert.user.firstName} ${cert.user.lastName}`,
+      courseTitle:       course?.title ?? 'Unknown Course',
+      instructorName:    course?.instructor
+        ? `${course.instructor.firstName} ${course.instructor.lastName}`
+        : 'EduBridge',
+      issuedBy:          'EduBridge Academy',
+      signature:         'EduBridge Academy',
+      issuedAt:          cert.issuedAt,
     };
   }
 
@@ -261,7 +292,48 @@ export class CertificatesService {
         .lineWidth(0.5)
         .stroke('#334155');
 
-      // Certificate number & date
+      // ── Signature section ───────────────────────────────────────────────────
+      const sigY = 340;
+
+      // Left signature — EduBridge
+      doc
+        .moveTo(W / 2 - 220, sigY)
+        .lineTo(W / 2 - 60, sigY)
+        .lineWidth(1)
+        .stroke('#475569');
+
+      doc
+        .fillColor('#f8fafc')
+        .font('Helvetica-BoldOblique')
+        .fontSize(13)
+        .text('EduBridge', W / 2 - 220, sigY + 6, { width: 160, align: 'center' });
+
+      doc
+        .fillColor('#64748b')
+        .font('Helvetica')
+        .fontSize(9)
+        .text('EduBridge Academy', W / 2 - 220, sigY + 24, { width: 160, align: 'center' });
+
+      // Right signature — Instructor
+      doc
+        .moveTo(W / 2 + 60, sigY)
+        .lineTo(W / 2 + 220, sigY)
+        .lineWidth(1)
+        .stroke('#475569');
+
+      doc
+        .fillColor('#f8fafc')
+        .font('Helvetica-BoldOblique')
+        .fontSize(13)
+        .text(data.instructorName, W / 2 + 60, sigY + 6, { width: 160, align: 'center' });
+
+      doc
+        .fillColor('#64748b')
+        .font('Helvetica')
+        .fontSize(9)
+        .text('Course Instructor', W / 2 + 60, sigY + 24, { width: 160, align: 'center' });
+
+      // ── Certificate number & date ────────────────────────────────────────────
       const dateStr = data.issuedAt.toLocaleDateString('en-US', {
         year: 'numeric', month: 'long', day: 'numeric',
       });
@@ -269,9 +341,9 @@ export class CertificatesService {
       doc
         .fillColor('#64748b')
         .font('Helvetica')
-        .fontSize(10)
-        .text(`Certificate No: ${data.certificateNumber}`, 60, 348, { align: 'left' })
-        .text(`Issued: ${dateStr}`, W - 260, 348, { align: 'right', width: 200 });
+        .fontSize(9)
+        .text(`Certificate No: ${data.certificateNumber}`, 60, H - 58, { align: 'left' })
+        .text(`Issued: ${dateStr}`, W - 260, H - 58, { align: 'right', width: 200 });
 
       doc.end();
     });
