@@ -434,6 +434,69 @@ export class AdminService {
     };
   }
 
+  async getPendingCourses(paginationDto: PaginationDto) {
+    const { page, limit, skip } = paginationDto;
+
+    const [courses, total] = await Promise.all([
+      this.prisma.course.findMany({
+        where: { status: CourseStatus.UNDER_REVIEW },
+        skip,
+        take: limit,
+        include: {
+          instructor: { select: { id: true, firstName: true, lastName: true, email: true, avatar: true } },
+          category: { select: { id: true, name: true } },
+          _count: { select: { sections: true, enrollments: true } },
+        },
+        orderBy: { updatedAt: 'asc' }, // oldest submission first
+      }),
+      this.prisma.course.count({ where: { status: CourseStatus.UNDER_REVIEW } }),
+    ]);
+
+    return {
+      courses,
+      pagination: { page, limit, total, pages: Math.ceil(total / (limit || 20)) },
+    };
+  }
+
+  async getCourseForReview(courseId: string) {
+    this.logger.debug(`getCourseForReview called with courseId="${courseId}" (length=${courseId.length})`);
+    const course = await this.prisma.course.findUnique({
+      where: { id: courseId },
+      include: {
+        instructor: {
+          select: {
+            id: true, firstName: true, lastName: true, email: true, avatar: true, bio: true,
+            instructorProfile: { select: { title: true, expertise: true, rating: true, totalReviews: true, isVerified: true } },
+          },
+        },
+        category: true,
+        sections: {
+          orderBy: { sortOrder: 'asc' },
+          include: {
+            lessons: {
+              orderBy: { sortOrder: 'asc' },
+              include: {
+                videos: { select: { id: true, status: true, duration: true, thumbnailUrl: true, processedUrl: true, originalUrl: true, errorMessage: true, variants: { select: { quality: true, s3Url: true, resolution: true } } } },
+                quiz: { select: { id: true, title: true, isPublished: true, _count: { select: { questions: true } } } },
+              },
+            },
+          },
+        },
+        reviews: {
+          take: 5,
+          orderBy: { createdAt: 'desc' },
+          include: { user: { select: { firstName: true, lastName: true, avatar: true } } },
+        },
+        _count: { select: { sections: true, enrollments: true, reviews: true } },
+      },
+    });
+
+    this.logger.debug(`getCourseForReview result: ${course ? 'FOUND' : 'NOT FOUND (null)'}`);
+    if (!course) throw new NotFoundException('Course not found');
+
+    return course;
+  }
+
   async approveCourse(courseId: string) {
     const course = await this.prisma.course.findUnique({
       where: { id: courseId },
@@ -447,24 +510,54 @@ export class AdminService {
       throw new BadRequestException('Course is not pending review');
     }
 
-    const updatedCourse = await this.prisma.course.update({
-      where: { id: courseId },
-      data: {
-        status: CourseStatus.PUBLISHED,
-        isPublished: true,
-        publishedAt: new Date(),
-      },
-      include: {
-        instructor: {
-          select: {
-            id: true,
-            firstName: true,
-            lastName: true,
-            email: true,
+    const [updatedCourse] = await this.prisma.$transaction([
+      this.prisma.course.update({
+        where: { id: courseId },
+        data: {
+          status: CourseStatus.PUBLISHED,
+          isPublished: true,
+          publishedAt: new Date(),
+        },
+        include: {
+          instructor: {
+            select: {
+              id: true,
+              firstName: true,
+              lastName: true,
+              email: true,
+            },
           },
         },
-      },
+      }),
+      // Publish all sections and lessons so students can see the content
+      this.prisma.section.updateMany({
+        where: { courseId },
+        data: { isPublished: true },
+      }),
+      this.prisma.lesson.updateMany({
+        where: { section: { courseId } },
+        data: { isPublished: true },
+      }),
+    ]);
+
+    // Auto-approve all transcoded videos so students can watch immediately
+    const pendingVideos = await this.prisma.video.findMany({
+      where: { status: VideoStatus.PENDING_REVIEW, lesson: { section: { courseId } } },
+      include: { variants: true },
     });
+    for (const video of pendingVideos) {
+      const best =
+        (video.variants as any[]).find((v) => v.quality === '720p') ||
+        (video.variants as any[]).find((v) => v.quality === '480p') ||
+        (video.variants as any[])[0];
+      await this.prisma.video.update({ where: { id: video.id }, data: { status: VideoStatus.READY } });
+      if (best && video.lessonId) {
+        await this.prisma.lesson.update({
+          where: { id: video.lessonId },
+          data: { videoUrl: best.s3Url, duration: video.duration },
+        });
+      }
+    }
 
     // Notify instructor
     const instructor = updatedCourse.instructor as any;
@@ -491,60 +584,73 @@ export class AdminService {
   async rejectCourse(courseId: string, reason?: string) {
     const course = await this.prisma.course.findUnique({
       where: { id: courseId },
-    });
-
-    if (!course) {
-      throw new NotFoundException('Course not found');
-    }
-
-    if (course.status !== CourseStatus.UNDER_REVIEW) {
-      throw new BadRequestException('Course is not pending review');
-    }
-
-    const updatedCourse = await this.prisma.course.update({
-      where: { id: courseId },
-      data: {
-        status: CourseStatus.REJECTED,
-        isPublished: false,
-      },
       include: {
-        instructor: {
-          select: {
-            id: true,
-            firstName: true,
-            lastName: true,
-            email: true,
+        instructor: { select: { id: true, firstName: true, lastName: true, email: true } },
+        sections: {
+          include: {
+            lessons: {
+              include: { videos: { select: { id: true } } },
+            },
           },
         },
       },
     });
 
-    // Notify instructor
-    const instructor = updatedCourse.instructor as any;
+    if (!course) throw new NotFoundException('Course not found');
+    if (course.status !== CourseStatus.UNDER_REVIEW) {
+      throw new BadRequestException('Course is not pending review');
+    }
+
+    // Delete all S3 video files for every lesson in the course
+    const videoIds: string[] = course.sections
+      .flatMap((s) => s.lessons)
+      .flatMap((l) => l.videos)
+      .map((v) => v.id);
+
+    await Promise.allSettled(
+      videoIds.map((id) =>
+        this.videoProcessingService.deleteVideoAdmin(id).catch((e) =>
+          this.logger.warn(`Failed to delete video ${id} from S3: ${e.message}`),
+        ),
+      ),
+    );
+
+    // Delete the entire course — cascades to sections, lessons, videos, quizzes, enrollments
+    await this.prisma.course.delete({ where: { id: courseId } });
+
+    // Notify instructor in-app
+    const instructor = course.instructor as any;
+    const rejectionReason = reason ?? 'Please review the course content guidelines and resubmit.';
+
+    this.notificationsService
+      .createNotification({
+        userId:    course.instructorId,
+        type:      NotificationType.SYSTEM_ALERT,
+        title:     'Course Rejected',
+        message:   `Your course "${course.title}" was rejected. Reason: ${rejectionReason}`,
+        actionUrl: `/instructor/courses`,
+      })
+      .catch(() => {});
+
+    // Send email
     if (instructor?.email) {
       const frontendUrl = process.env.FRONTEND_URL?.split(',')[0] ?? '';
       this.emailService
         .sendCourseRejected(
           instructor.email,
           `${instructor.firstName} ${instructor.lastName}`,
-          updatedCourse.title,
-          reason ?? 'Please review the course content guidelines and resubmit.',
+          course.title,
+          rejectionReason,
           frontendUrl,
         )
         .catch((e) => this.logger.warn(`Rejection email failed: ${e.message}`));
     }
 
-    this.notificationsService
-      .createNotification({
-        userId:    updatedCourse.instructorId,
-        type:      NotificationType.SYSTEM_ALERT,
-        title:     'Course Needs Revisions',
-        message:   `Your course "${updatedCourse.title}" requires changes before publishing. ${reason ?? ''}`,
-        actionUrl: `/instructor/courses/${updatedCourse.id}/edit`,
-      })
-      .catch(() => {});
-
-    return updatedCourse;
+    return {
+      message: `Course "${course.title}" rejected and permanently deleted.`,
+      deletedVideos: videoIds.length,
+      reason: rejectionReason,
+    };
   }
 
   async suspendCourse(courseId: string, reason?: string) {
@@ -1087,8 +1193,9 @@ export class AdminService {
         id: v.id,
         originalFilename: v.originalFilename,
         thumbnailUrl: v.thumbnailUrl,
+        originalUrl: v.originalUrl,
         duration: v.duration,
-        fileSize: v.size?.toString(),
+        fileSize: v.size != null ? Number(v.size) : null,
         processingCompletedAt: v.processingCompletedAt,
         submittedAt: v.createdAt,
         variants: v.variants,
@@ -1096,7 +1203,7 @@ export class AdminService {
           ? {
               id: v.lesson.id,
               title: v.lesson.title,
-              section: (v.lesson as any).section?.title,
+              section: { title: (v.lesson as any).section?.title ?? null },
               course: {
                 id: (v.lesson as any).section?.course?.id,
                 title: (v.lesson as any).section?.course?.title,
@@ -1107,6 +1214,10 @@ export class AdminService {
       })),
       pagination: { page, limit, total, pages: Math.ceil(total / (limit || 20)) },
     };
+  }
+
+  async getVideoPreviewUrl(videoId: string, quality = '720p') {
+    return this.videoProcessingService.adminPreviewUrl(videoId, quality);
   }
 
   async approveVideo(videoId: string) {

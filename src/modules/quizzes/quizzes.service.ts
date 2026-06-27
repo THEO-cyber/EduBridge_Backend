@@ -167,31 +167,41 @@ export class QuizzesService {
   // ── Student / Public: get quiz for a lesson ───────────────────────────────
 
   async getQuizByLesson(lessonId: string, userId: string) {
+    // Resolve instructor ownership via the typed Prisma client — same pattern
+    // used by assertInstructorOwnsLesson, so we know this path works.
+    const lesson = await this.prisma.lesson.findUnique({
+      where: { id: lessonId },
+      include: { section: { include: { course: { select: { instructorId: true } } } } },
+    });
+    if (!lesson) throw new NotFoundException('Lesson not found');
+
+    const isInstructor = lesson.section.course.instructorId === userId;
+
     const quiz = await this.db.quiz.findUnique({
       where: { lessonId },
       include: {
-        questions: {
-          orderBy: { sortOrder: 'asc' },
-          select: {
-            id: true, questionText: true, questionType: true,
-            options: true, points: true, sortOrder: true,
-            // Never return correctAnswer or explanation to students before submit
-          },
-        },
+        questions: { orderBy: { sortOrder: 'asc' } },
         _count: { select: { attempts: true } },
       },
     });
 
     if (!quiz) throw new NotFoundException('No quiz found for this lesson');
-    if (!quiz.isPublished) throw new BadRequestException('Quiz is not yet published');
 
-    // Check if user has a prior passing attempt
-    const best = await this.db.quizAttempt.findFirst({
+    if (!quiz.isPublished && !isInstructor) {
+      throw new BadRequestException('Quiz is not yet published');
+    }
+
+    // Students never see correct answers or explanations before submitting
+    const questions = isInstructor
+      ? quiz.questions
+      : quiz.questions.map(({ correctAnswer, explanation, ...q }: any) => q);
+
+    const best = isInstructor ? null : await this.db.quizAttempt.findFirst({
       where:   { quizId: quiz.id, userId, isPassed: true },
       orderBy: { score: 'desc' },
     });
 
-    return { quiz, bestPassing: best ?? null };
+    return { quiz: { ...quiz, questions }, isInstructor, bestPassing: best ?? null };
   }
 
   // ── Student: start attempt ────────────────────────────────────────────────

@@ -64,6 +64,7 @@ const QUALITY_PROFILES: Record<string, QualityProfile> = {
 export class VideoProcessingService {
   private readonly logger = new Logger(VideoProcessingService.name);
   private s3: S3Client;
+  private s3Public: S3Client; // same creds, but uses the public-facing MinIO URL for presigned PUTs
   private readonly bucket: string;
   private readonly region: string;
   private readonly cloudFrontDomain?: string;
@@ -77,20 +78,27 @@ export class VideoProcessingService {
     this.bucket = this.configService.get<string>('aws.s3Bucket') || '';
     this.cloudFrontDomain = this.configService.get<string>('AWS_CLOUDFRONT_DOMAIN');
 
-    // S3_ENDPOINT: set to MinIO URL (e.g. http://minio:9000) to use MinIO instead of AWS S3.
-    // Leave blank to use real AWS S3.
-    const s3Endpoint = this.configService.get<string>('S3_ENDPOINT');
+    const s3Endpoint   = this.configService.get<string>('S3_ENDPOINT');
+    // MINIO_PUBLIC_URL: the URL clients (Flutter) use to reach MinIO directly.
+    // Defaults to S3_ENDPOINT when not set (works fine on the same machine).
+    const s3PublicUrl  = this.configService.get<string>('MINIO_PUBLIC_URL') || s3Endpoint;
+
+    const credentials = {
+      accessKeyId:     this.configService.get<string>('aws.accessKeyId') || '',
+      secretAccessKey: this.configService.get<string>('aws.secretAccessKey') || '',
+    };
 
     this.s3 = new S3Client({
       region: this.region,
-      credentials: {
-        accessKeyId: this.configService.get<string>('aws.accessKeyId') || '',
-        secretAccessKey: this.configService.get<string>('aws.secretAccessKey') || '',
-      },
-      ...(s3Endpoint ? {
-        endpoint: s3Endpoint,
-        forcePathStyle: true, // required for MinIO — uses /bucket/key instead of bucket.host/key
-      } : {}),
+      credentials,
+      ...(s3Endpoint ? { endpoint: s3Endpoint, forcePathStyle: true } : {}),
+    });
+
+    // Used only for generating presigned PUT URLs returned to mobile clients
+    this.s3Public = new S3Client({
+      region: this.region,
+      credentials,
+      ...(s3PublicUrl ? { endpoint: s3PublicUrl, forcePathStyle: true } : {}),
     });
   }
 
@@ -140,7 +148,6 @@ export class VideoProcessingService {
           Key: s3Key,
           Body: buffer,
           ContentType: mimeType,
-          ServerSideEncryption: 'AES256',
           Metadata: {
             'original-name': encodeURIComponent(originalName),
             'lesson-id': lessonId,
@@ -162,20 +169,26 @@ export class VideoProcessingService {
         },
       });
 
-      try {
-        await this.videoQueue.add(
-          'process-video',
-          { videoId: fileId, s3Key, originalName, lessonId },
-          {
-            attempts: 3,
-            backoff: { type: 'exponential', delay: 5000 },
-            removeOnComplete: 10,
-            removeOnFail: 5,
-          },
-        );
-      } catch (queueErr: any) {
-        // Redis unavailable in dev — job will be enqueued once Redis comes up
-        this.logger.warn(`Queue unavailable, job not enqueued: ${queueErr.message}`);
+      if (process.env.REDIS_AVAILABLE === 'true') {
+        try {
+          await this.videoQueue.add(
+            'process-video',
+            { videoId: fileId, s3Key, originalName, lessonId },
+            {
+              attempts: 3,
+              backoff: { type: 'exponential', delay: 5000 },
+              removeOnComplete: 10,
+              removeOnFail: 5,
+              priority: 1, // orchestration jobs always jump ahead of transcode jobs
+            },
+          );
+        } catch (queueErr: any) {
+          this.logger.warn(`Queue add failed, falling back to direct processing: ${queueErr.message}`);
+          this.processVideoDirectly(fileId, s3Key);
+        }
+      } else {
+        // No Redis — bypass BullMQ and transcode directly in-process
+        this.processVideoDirectly(fileId, s3Key);
       }
 
       this.logger.log(`Video uploaded: ${fileId}`);
@@ -184,6 +197,98 @@ export class VideoProcessingService {
       this.logger.error(`Upload failed: ${error.message}`, error.stack);
       throw new BadRequestException(`Failed to upload video: ${error.message}`);
     }
+  }
+
+  /**
+   * Step 1 of the fast-upload flow.
+   * Returns a presigned PUT URL pointing at the public MinIO address so the
+   * client can upload the file directly — NestJS never buffers the bytes.
+   */
+  async initiateUpload(
+    lessonId: string,
+    userId: string,
+    filename: string,
+    mimeType: string,
+    fileSize: number,
+  ) {
+    const lesson = await this.prisma.lesson.findUnique({
+      where: { id: lessonId },
+      include: { section: { include: { course: { select: { instructorId: true } } } } },
+    });
+    if (!lesson) throw new NotFoundException('Lesson not found');
+    if (lesson.section.course.instructorId !== userId) {
+      throw new BadRequestException('Not authorized to upload video for this lesson');
+    }
+
+    const fileId   = crypto.randomUUID();
+    const ext      = path.extname(filename).toLowerCase() || '.mp4';
+    const s3Key    = `videos/raw/${fileId}${ext}`;
+
+    await this.prisma.video.create({
+      data: {
+        id: fileId,
+        lessonId,
+        originalFilename: filename,
+        filename: s3Key,
+        size: BigInt(fileSize),
+        s3Key,
+        originalUrl: this.buildUrl(s3Key),
+        status: VideoStatus.UPLOADED,
+      },
+    });
+
+    // Presigned PUT — client uploads directly to MinIO (or S3 in production)
+    const uploadUrl = await getSignedUrl(
+      this.s3Public,
+      new PutObjectCommand({
+        Bucket:      this.bucket,
+        Key:         s3Key,
+        ContentType: mimeType,
+      }),
+      { expiresIn: 3600 },
+    );
+
+    return { videoId: fileId, uploadUrl, s3Key, expiresIn: 3600 };
+  }
+
+  /**
+   * Step 2 of the fast-upload flow.
+   * Called after the client has finished the direct PUT to MinIO.
+   * Queues the transcoding job and returns the video record.
+   */
+  async completeUpload(videoId: string, userId: string) {
+    const video = await this.prisma.video.findUnique({
+      where: { id: videoId },
+      include: {
+        lesson: {
+          include: { section: { include: { course: { select: { instructorId: true } } } } },
+        },
+      },
+    });
+    if (!video) throw new NotFoundException('Video not found');
+    if (video.lesson?.section?.course?.instructorId !== userId) {
+      throw new BadRequestException('Not authorized');
+    }
+    if (video.status !== VideoStatus.UPLOADED) {
+      throw new BadRequestException('Video is not in UPLOADED state');
+    }
+
+    if (process.env.REDIS_AVAILABLE === 'true') {
+      try {
+        await this.videoQueue.add(
+          'process-video',
+          { videoId, s3Key: video.s3Key, originalName: video.originalFilename, lessonId: video.lessonId },
+          { attempts: 3, backoff: { type: 'exponential', delay: 5000 }, removeOnComplete: 10, removeOnFail: 5, priority: 1 },
+        );
+      } catch (queueErr: any) {
+        this.logger.warn(`Queue add failed, falling back to direct processing: ${queueErr.message}`);
+        this.processVideoDirectly(videoId, video.s3Key);
+      }
+    } else {
+      this.processVideoDirectly(videoId, video.s3Key);
+    }
+
+    return { videoId, status: VideoStatus.UPLOADED, message: 'Upload confirmed — transcoding started' };
   }
 
   async processVideo(videoId: string, transcodingOptions: TranscodingOptions[]) {
@@ -199,6 +304,11 @@ export class VideoProcessingService {
       data: { status: VideoStatus.PROCESSING, processingStartedAt: new Date() },
     });
 
+    // Smaller files get lower priority number = processed sooner.
+    // 100 MB threshold: short clips (tutorials, demos) jump ahead of hour-long lectures.
+    const fileSizeBytes = video.size ? Number(video.size) : 0;
+    const transcodePriority = fileSizeBytes < 100 * 1024 * 1024 ? 5 : 20;
+
     const jobs = transcodingOptions.map((opt) =>
       this.videoQueue.add(
         'transcode-video',
@@ -209,7 +319,7 @@ export class VideoProcessingService {
           format: opt.format,
           generateThumbnail: opt.generateThumbnail,
         },
-        { attempts: 2, backoff: { type: 'exponential', delay: 10000 } },
+        { attempts: 2, backoff: { type: 'exponential', delay: 10000 }, priority: transcodePriority },
       ),
     );
 
@@ -364,25 +474,117 @@ export class VideoProcessingService {
       targetS3Key = fallback.s3Key;
     }
 
-    // For CloudFront-backed assets, return direct URL (no signing needed)
-    if (this.cloudFrontDomain) {
-      return {
-        streamUrl: this.buildUrl(targetS3Key),
-        expiresIn: 3600,
-        format: targetS3Key.endsWith('.m3u8') ? 'hls' : 'mp4',
-      };
+    const format = targetS3Key.endsWith('.m3u8') ? 'hls' : 'mp4';
+
+    // 1. NGINX CDN (Docker production) — stable cacheable URL, no expiry
+    const cdnBase = this.configService.get<string>('MEDIA_CDN_URL');
+    if (cdnBase) {
+      return { streamUrl: `${cdnBase}/media/${targetS3Key}`, expiresIn: 0, format };
     }
 
+    // 2. CloudFront (AWS production)
+    if (this.cloudFrontDomain) {
+      return { streamUrl: this.buildUrl(targetS3Key), expiresIn: 3600, format };
+    }
+
+    // 3. Presigned URL (local dev without NGINX)
     const signedUrl = await getSignedUrl(
-      this.s3,
+      this.s3Public,
       new GetObjectCommand({ Bucket: this.bucket, Key: targetS3Key }),
       { expiresIn: 3600 },
     );
+    return { streamUrl: signedUrl, expiresIn: 3600, format };
+  }
+
+  // Admin-only: generates a preview URL without checking video status
+  async adminPreviewUrl(videoId: string, quality = '720p') {
+    const video = await this.prisma.video.findUnique({
+      where: { id: videoId },
+      include: { variants: { where: { quality } } },
+    });
+    if (!video) throw new NotFoundException('Video not found');
+
+    let targetS3Key = video.variants[0]?.s3Key;
+    if (!targetS3Key) {
+      const fallback = await this.prisma.videoVariant.findFirst({
+        where: { videoId },
+        orderBy: { createdAt: 'desc' },
+      });
+      if (!fallback) throw new NotFoundException('No processed variants found for this video');
+      targetS3Key = fallback.s3Key;
+    }
+
+    const format = targetS3Key.endsWith('.m3u8') ? 'hls' : 'mp4';
+    const cdnBase = this.configService.get<string>('MEDIA_CDN_URL');
+    if (cdnBase) {
+      return { streamUrl: `${cdnBase}/media/${targetS3Key}`, expiresIn: 0, format };
+    }
+    if (this.cloudFrontDomain) {
+      return { streamUrl: this.buildUrl(targetS3Key), expiresIn: 3600, format };
+    }
+    const signedUrl = await getSignedUrl(
+      this.s3Public,
+      new GetObjectCommand({ Bucket: this.bucket, Key: targetS3Key }),
+      { expiresIn: 3600 },
+    );
+    return { streamUrl: signedUrl, expiresIn: 3600, format };
+  }
+
+  async streamVideoChunk(videoId: string, quality = '720p', rangeHeader?: string) {
+    const video = await this.prisma.video.findUnique({
+      where: { id: videoId },
+      include: { variants: { where: { quality } } },
+    });
+
+    if (!video) throw new NotFoundException('Video not found');
+    if (video.status === VideoStatus.PENDING_REVIEW)
+      throw new BadRequestException('Video is pending admin approval');
+    if (video.status !== VideoStatus.READY)
+      throw new BadRequestException('Video is not ready for streaming');
+
+    // Resolve variant — fall back to any available quality
+    let variant: any = video.variants[0];
+    if (!variant) {
+      variant = await this.prisma.videoVariant.findFirst({
+        where: { videoId, s3Key: { endsWith: '.mp4' } },
+        orderBy: { createdAt: 'desc' },
+      });
+    }
+    if (!variant) throw new NotFoundException('No processed variant found');
+
+    const totalSize = Number(variant.fileSize);
+    if (!totalSize) throw new BadRequestException('Video file size unknown — cannot stream');
+
+    // Parse Range header: "bytes=start-end"
+    const CHUNK = 10 * 1024 * 1024; // 10 MB per chunk
+    let start = 0;
+    let end = Math.min(CHUNK - 1, totalSize - 1);
+
+    if (rangeHeader) {
+      const m = rangeHeader.match(/bytes=(\d+)-(\d*)/);
+      if (m) {
+        start = parseInt(m[1], 10);
+        end   = m[2] ? parseInt(m[2], 10) : Math.min(start + CHUNK - 1, totalSize - 1);
+        end   = Math.min(end, totalSize - 1);
+      }
+    }
+
+    const contentLength = end - start + 1;
+
+    const s3Response = await this.s3.send(
+      new GetObjectCommand({
+        Bucket: this.bucket,
+        Key:    variant.s3Key,
+        Range:  `bytes=${start}-${end}`,
+      }),
+    );
 
     return {
-      streamUrl: signedUrl,
-      expiresIn: 3600,
-      format: targetS3Key.endsWith('.m3u8') ? 'hls' : 'mp4',
+      stream: s3Response.Body,
+      start,
+      end,
+      totalSize,
+      contentLength,
     };
   }
 
@@ -449,8 +651,8 @@ export class VideoProcessingService {
   async retryFailedVideo(videoId: string) {
     const video = await this.prisma.video.findUnique({ where: { id: videoId } });
     if (!video) throw new NotFoundException('Video not found');
-    if (video.status !== VideoStatus.FAILED) {
-      throw new BadRequestException('Video is not in FAILED state');
+    if (video.status !== VideoStatus.FAILED && video.status !== VideoStatus.PROCESSING) {
+      throw new BadRequestException('Video must be in FAILED or PROCESSING state to retry');
     }
 
     await this.prisma.video.update({
@@ -458,12 +660,16 @@ export class VideoProcessingService {
       data: { status: VideoStatus.UPLOADED, errorMessage: null, processingStartedAt: null, processingCompletedAt: null },
     });
 
-    await this.videoQueue.add('process-video', {
-      videoId,
-      s3Key: video.s3Key,
-      originalName: video.originalFilename,
-      lessonId: video.lessonId,
-    });
+    if (process.env.REDIS_AVAILABLE === 'true') {
+      await this.videoQueue.add('process-video', {
+        videoId,
+        s3Key: video.s3Key,
+        originalName: video.originalFilename,
+        lessonId: video.lessonId,
+      });
+    } else {
+      this.processVideoDirectly(videoId, video.s3Key);
+    }
 
     return { success: true, message: 'Video requeued for processing' };
   }
@@ -476,6 +682,38 @@ export class VideoProcessingService {
   }
 
   // ─── Private helpers ───────────────────────────────────────────────────────
+
+  /**
+   * Runs transcoding directly in-process without BullMQ.
+   * Used when Redis is unavailable (development without Redis installed).
+   * Fires and forgets — caller gets the upload response immediately.
+   */
+  private processVideoDirectly(videoId: string, s3Key: string): void {
+    const opts: TranscodingOptions[] = [
+      { quality: '360p', format: 'mp4', generateThumbnail: true },
+      { quality: '480p', format: 'mp4', generateThumbnail: false },
+      { quality: '720p', format: 'mp4', generateThumbnail: false },
+    ];
+
+    (async () => {
+      try {
+        await this.prisma.video.update({
+          where: { id: videoId },
+          data: { status: VideoStatus.PROCESSING, processingStartedAt: new Date() },
+        });
+        // Run all quality variants in parallel — 3× faster than sequential
+        await Promise.all(
+          opts.map((opt) =>
+            this.transcodeVideo(videoId, s3Key, opt.quality, opt.format, opt.generateThumbnail),
+          ),
+        );
+        this.logger.log(`Direct transcoding completed for video ${videoId}`);
+      } catch (error: any) {
+        this.logger.error(`Direct transcoding failed for ${videoId}: ${error.message}`);
+        await this.markVideoFailed(videoId, error.message).catch(() => {});
+      }
+    })();
+  }
 
   private async downloadFromS3(s3Key: string, destPath: string): Promise<void> {
     const resp = await this.s3.send(
@@ -611,7 +849,6 @@ export class VideoProcessingService {
         Key: s3Key,
         Body: fileBuffer,
         ContentType: contentType,
-        ServerSideEncryption: 'AES256',
       }),
     );
   }
@@ -652,6 +889,29 @@ export class VideoProcessingService {
         video.variants.find((v: any) => v.quality === '720p') ||
         video.variants.find((v: any) => v.quality === '480p') ||
         video.variants[0];
+
+      // If the course is already published, go straight to READY (no separate video review needed)
+      const publishedCourse = await this.prisma.course.findFirst({
+        where: {
+          isPublished: true,
+          sections: { some: { lessons: { some: { videos: { some: { id: videoId } } } } } },
+        },
+      });
+
+      if (publishedCourse) {
+        await this.prisma.video.update({
+          where: { id: videoId },
+          data: { status: VideoStatus.READY, processingCompletedAt: new Date(), processedUrl: best?.s3Url },
+        });
+        if (best && video.lessonId) {
+          await this.prisma.lesson.update({
+            where: { id: video.lessonId },
+            data: { videoUrl: best.s3Url, duration: video.duration },
+          });
+        }
+        this.logger.log(`Video ${videoId} auto-approved — course already published`);
+        return;
+      }
 
       // Move to PENDING_REVIEW — superadmin must approve before students can stream
       await this.prisma.video.update({

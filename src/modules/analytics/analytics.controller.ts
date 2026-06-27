@@ -77,13 +77,12 @@ export class AnalyticsController {
     enum: ['day', 'week', 'month'],
   })
   async getEnrollmentTrends(@Query() trendsQuery: TrendsQueryDto): Promise<any> {
-    if (!trendsQuery.startDate || !trendsQuery.endDate) {
-      throw new BadRequestException('Start date and end date are required');
-    }
+    const now = new Date();
+    const defaultStart = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
 
     const dateRange = {
-      startDate: trendsQuery.startDate,
-      endDate: trendsQuery.endDate,
+      startDate: trendsQuery.startDate ?? defaultStart,
+      endDate: trendsQuery.endDate ?? now,
     };
 
     return this.analyticsService.getEnrollmentTrends(

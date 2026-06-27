@@ -224,6 +224,16 @@ export class AuthController {
   // ── Google OAuth ──────────────────────────────────────────────────────────
 
   @Public()
+  @Post('google/mobile')
+  @HttpCode(HttpStatus.OK)
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @ApiOperation({ summary: 'Google Sign-In for mobile (exchange Google ID token for JWT)' })
+  async googleMobileAuth(@Body('idToken') idToken: string) {
+    if (!idToken) throw new UnauthorizedException('idToken is required');
+    return this.authService.googleMobileLogin(idToken);
+  }
+
+  @Public()
   @Get('google')
   @UseGuards(GoogleAuthGuard)
   @ApiOperation({ summary: 'Redirect to Google OAuth login page' })

@@ -4,7 +4,7 @@ import {
   IsArray,
   IsEnum,
   IsNumber,
-  IsPositive,
+  Min,
   ArrayMinSize,
   MinLength,
   MaxLength,
@@ -39,16 +39,16 @@ export class CreateCourseDto {
   @IsString()
   categoryId!: string;
 
-  @ApiProperty({ example: 99.99 })
+  @ApiProperty({ example: 99.99, description: 'Set to 0 for free courses' })
   @IsNumber({ maxDecimalPlaces: 2 })
-  @IsPositive()
+  @Min(0)
   @Type(() => Number)
   price!: number;
 
   @ApiProperty({ example: 79.99, required: false })
   @IsOptional()
   @IsNumber({ maxDecimalPlaces: 2 })
-  @IsPositive()
+  @Min(0)
   @Type(() => Number)
   discountPrice?: number;
 

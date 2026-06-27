@@ -2,7 +2,9 @@ import { WorkerHost, Processor } from '@nestjs/bullmq';
 import { Logger } from '@nestjs/common';
 import { VideoProcessingService, TranscodingOptions } from './video-processing.service';
 
-@Processor('video-processing')
+// concurrency: how many jobs this worker runs in parallel.
+// Cast needed because @nestjs/bullmq v10 narrows the type but bullmq v5 supports it.
+@Processor('video-processing', { concurrency: 10 } as any)
 export class VideoProcessingProcessor extends WorkerHost {
   private readonly logger = new Logger(VideoProcessingProcessor.name);
 
@@ -24,7 +26,7 @@ export class VideoProcessingProcessor extends WorkerHost {
   }
 
   private async handleProcessVideo(job: any) {
-    const { videoId, lessonId } = job.data;
+    const { videoId } = job.data;
     this.logger.log(`Processing video: ${videoId}`);
 
     await job.updateProgress(10);

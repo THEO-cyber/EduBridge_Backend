@@ -143,6 +143,18 @@ export class LiveSessionsService {
     });
   }
 
+  async deleteLiveSession(sessionId: string, instructorId: string) {
+    const session = await (this.prisma as any).liveSession.findUnique({ where: { id: sessionId } });
+    if (!session) throw new NotFoundException('Session not found');
+    if (session.instructorId !== instructorId) throw new ForbiddenException('Not your session');
+    if (session.status === SessionStatus.COMPLETED) {
+      throw new BadRequestException('Cannot delete a completed session');
+    }
+
+    await (this.prisma as any).liveSession.delete({ where: { id: sessionId } });
+    return { success: true, message: 'Session deleted' };
+  }
+
   // ── Students: browse upcoming public sessions ───────────────────────────────
 
   async browseUpcomingSessions(

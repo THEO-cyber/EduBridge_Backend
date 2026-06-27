@@ -429,7 +429,7 @@ export class AnalyticsService {
         sections: {
           include: {
             lessons: {
-              select: { id: true, videoDuration: true },
+              select: { id: true, title: true, videoDuration: true },
             },
           },
         },

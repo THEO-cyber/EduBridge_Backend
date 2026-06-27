@@ -9,7 +9,9 @@ const helmet = require('helmet');
 const compression = require('compression');
 const cookieParser = require('cookie-parser');
 
-import { AppModule } from './app.module';
+// AppModule is NOT statically imported here — it is dynamically imported inside
+// bootstrap() AFTER the Redis probe sets REDIS_AVAILABLE.  This ensures that
+// VideoProcessingModule's module-level code runs with the correct env var value.
 import { AllExceptionsFilter } from './common/filters/http-exception.filter';
 import { CorrelationIdMiddleware } from './common/middleware/correlation-id.middleware';
 import { TimeoutInterceptor } from './common/interceptors/timeout.interceptor';
@@ -22,6 +24,9 @@ async function bootstrap() {
   const redisAvailable = await probeRedis(redisHost, redisPort, 1500);
   process.env.REDIS_AVAILABLE = redisAvailable ? 'true' : 'false';
   console.log('[BOOT] Step 2: creating NestJS app...');
+
+  // Dynamic import: evaluated NOW so VideoProcessingModule reads REDIS_AVAILABLE correctly
+  const { AppModule } = await import('./app.module');
 
   const app = await NestFactory.create<NestExpressApplication>(AppModule, {
     bufferLogs: true,

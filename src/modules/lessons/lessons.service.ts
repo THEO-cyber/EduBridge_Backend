@@ -1,11 +1,11 @@
 import {
-  Injectable, NotFoundException, ForbiddenException, BadRequestException,
+  Injectable, NotFoundException, ForbiddenException, UnauthorizedException,
 } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import {
-  IsString, IsOptional, IsNumber, IsBoolean, Min,
+  IsString, IsOptional, IsNumber, IsBoolean,
 } from 'class-validator';
-import { Transform, Type } from 'class-transformer';
+import { Type } from 'class-transformer';
 
 // ─── DTOs ──────────────────────────────────────────────────────────────────
 
@@ -72,15 +72,22 @@ export class LessonsService {
       where.isPublished = true; // students only see published sections
     }
 
+    const isInstructor = !!(instructorId && course.instructorId === instructorId);
+
     return this.prisma.section.findMany({
       where,
       include: {
         lessons: {
-          where: instructorId && course.instructorId === instructorId ? {} : { isPublished: true },
+          where: isInstructor ? {} : { isPublished: true },
           orderBy: { sortOrder: 'asc' },
           select: {
             id: true, title: true, description: true, sortOrder: true,
-            videoDuration: true, isPreview: true, isPublished: true, videoUrl: true,
+            videoDuration: true, isPreview: true, isPublished: true,
+            videos: {
+              select: { id: true, status: true },
+              orderBy: { createdAt: 'desc' },
+              take: 1,
+            },
           },
         },
       },
@@ -158,17 +165,18 @@ export class LessonsService {
     });
     if (!lesson) throw new NotFoundException('Lesson not found');
 
-    // Non-preview lessons require enrollment
-    if (!lesson.isPreview && userId) {
+    // Preview lessons are public; all others require auth + enrollment
+    if (!lesson.isPreview) {
+      if (!userId) throw new UnauthorizedException('Please log in to access this lesson');
+
       const isInstructor = lesson.section.course.instructorId === userId;
 
       if (!isInstructor) {
         const enrolled = await this.prisma.enrollment.findUnique({
           where: { userId_courseId: { userId, courseId: lesson.section.course.id } },
         });
-        if (!enrolled) throw new ForbiddenException('Enroll in this course to access lessons');
+        if (!enrolled) throw new ForbiddenException('Enroll in this course to access this lesson');
 
-        // Content drip: check if lesson is released yet
         const releaseAt = (lesson as any).releaseAt as Date | null;
         if (releaseAt && releaseAt > new Date()) {
           throw new ForbiddenException(

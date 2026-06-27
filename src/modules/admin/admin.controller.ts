@@ -208,14 +208,35 @@ export class AdminController {
     return this.adminService.getCourses(paginationDto, parsedFilters);
   }
 
+  @Get('courses/pending')
+  @UseGuards(RolesGuard)
+  @Roles(Role.SUPER_ADMIN)
+  @ApiOperation({ summary: 'List all courses awaiting review (Super Admin only)' })
+  async getPendingCourses(@Query() paginationDto: PaginationDto) {
+    return this.adminService.getPendingCourses(paginationDto);
+  }
+
+  // Must come AFTER static routes (courses/pending) so NestJS doesn't shadow them
+  @Get('courses/:id')
+  @UseGuards(RolesGuard)
+  @Roles(Role.SUPER_ADMIN)
+  @ApiOperation({ summary: 'Get full course detail for review (Super Admin only)' })
+  async getCourseForReview(@Param('id') courseId: string) {
+    return this.adminService.getCourseForReview(courseId);
+  }
+
   @Put('courses/:id/approve')
-  @ApiOperation({ summary: 'Approve course' })
+  @UseGuards(RolesGuard)
+  @Roles(Role.SUPER_ADMIN)
+  @ApiOperation({ summary: 'Approve course — makes it live (Super Admin only)' })
   async approveCourse(@Param('id') courseId: string) {
     return this.adminService.approveCourse(courseId);
   }
 
   @Put('courses/:id/reject')
-  @ApiOperation({ summary: 'Reject course' })
+  @UseGuards(RolesGuard)
+  @Roles(Role.SUPER_ADMIN)
+  @ApiOperation({ summary: 'Reject and permanently delete a course — notifies instructor with reason (Super Admin only)' })
   async rejectCourse(
     @Param('id') courseId: string,
     @Body() rejectCourseDto: RejectCourseDto,
@@ -472,6 +493,17 @@ export class AdminController {
       throw new BadRequestException('Rejection reason is required');
     }
     return this.adminService.rejectVideo(videoId, reason);
+  }
+
+  @Get('videos/:id/preview-url')
+  @Roles(Role.SUPER_ADMIN, Role.ADMIN)
+  @ApiOperation({ summary: 'Get a short-lived preview URL for any video regardless of status (Admin only)' })
+  @ApiQuery({ name: 'quality', required: false, enum: ['360p', '480p', '720p', '1080p'] })
+  async getVideoPreviewUrl(
+    @Param('id') videoId: string,
+    @Query('quality') quality = '720p',
+  ) {
+    return this.adminService.getVideoPreviewUrl(videoId, quality);
   }
 
   // ── Reviews (Super Admin / Admin visibility) ──────────────────────────────

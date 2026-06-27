@@ -8,7 +8,7 @@ import { PrismaService } from '../../common/prisma/prisma.service';
 import { CreateCourseDto } from './dto/create-course.dto';
 import { UpdateCourseDto } from './dto/update-course.dto';
 import { PaginationDto } from '../../common/dto/pagination.dto';
-import { CourseStatus, CourseLevel, Role, EnrollmentStatus } from '@prisma/client';
+import { CourseStatus, CourseLevel, Role, EnrollmentStatus, NotificationType } from '@prisma/client';
 
 @Injectable()
 export class CoursesService {
@@ -409,9 +409,30 @@ export class CoursesService {
       where: { id },
       data: {
         status: CourseStatus.UNDER_REVIEW,
-        isPublished: false, // Will be set to true by admin after review
+        isPublished: false,
+      },
+      include: {
+        instructor: { select: { firstName: true, lastName: true } },
       },
     });
+
+    // Notify all active superadmins
+    const superAdmins = await this.prisma.user.findMany({
+      where: { role: Role.SUPER_ADMIN, isActive: true },
+      select: { id: true },
+    });
+
+    if (superAdmins.length > 0) {
+      await this.prisma.notification.createMany({
+        data: superAdmins.map((admin) => ({
+          userId:    admin.id,
+          type:      NotificationType.SYSTEM_ALERT,
+          title:     'New Course Awaiting Review',
+          message:   `"${updatedCourse.title}" submitted by ${(updatedCourse.instructor as any).firstName} ${(updatedCourse.instructor as any).lastName} is ready for review.`,
+          actionUrl: `/admin/courses/${updatedCourse.id}/review`,
+        })),
+      });
+    }
 
     return updatedCourse;
   }

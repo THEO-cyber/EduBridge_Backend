@@ -348,7 +348,37 @@ export class AuthService {
     return { message: 'Password changed successfully. Please log in again.' };
   }
 
-  // ── Google OAuth ──────────────────────────────────────────────────────────
+  // ── Google OAuth (mobile — ID token flow) ────────────────────────────────
+
+  async googleMobileLogin(idToken: string) {
+    let payload: Record<string, string>;
+    try {
+      const res = await fetch(
+        `https://oauth2.googleapis.com/tokeninfo?id_token=${idToken}`,
+      );
+      payload = (await res.json()) as Record<string, string>;
+      if (!res.ok || payload['error_description']) {
+        throw new Error('invalid');
+      }
+    } catch {
+      throw new UnauthorizedException('Invalid Google ID token');
+    }
+
+    const clientId = this.configService.get<string>('google.clientId') ?? '';
+    if (payload['aud'] !== clientId) {
+      throw new UnauthorizedException('Google token audience mismatch');
+    }
+
+    return this.googleLogin({
+      googleId:  payload['sub'],
+      email:     payload['email'],
+      firstName: payload['given_name']  ?? '',
+      lastName:  payload['family_name'] ?? '',
+      avatar:    payload['picture'],
+    });
+  }
+
+  // ── Google OAuth (browser redirect flow) ─────────────────────────────────
 
   async googleLogin(googleUser: {
     googleId: string;

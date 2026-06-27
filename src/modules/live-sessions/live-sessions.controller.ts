@@ -169,6 +169,17 @@ export class LiveSessionsController {
 
   @UseGuards(RolesGuard)
   @Roles(Role.INSTRUCTOR)
+  @Delete(':id')
+  @ApiOperation({ summary: 'Delete a live session (Instructor only, not in-progress or completed)' })
+  async deleteLiveSession(
+    @Param('id') sessionId: string,
+    @CurrentUser() user: User,
+  ) {
+    return this.liveSessionsService.deleteLiveSession(sessionId, user.id);
+  }
+
+  @UseGuards(RolesGuard)
+  @Roles(Role.INSTRUCTOR)
   @Post(':id/notify-accepted')
   @ApiOperation({ summary: 'Send notification to all accepted students (Instructor only)' })
   async notifyAcceptedStudents(

@@ -164,48 +164,65 @@ export class EnrollmentsService {
         completedAt: isCompleted ? new Date() : null,
       },
       update: {
-        watchTime: Math.max(watchTime, 0), // Ensure watchTime is not negative
-        isCompleted: isCompleted || undefined,
-        completedAt: isCompleted ? new Date() : undefined,
+        watchTime: Math.max(watchTime, 0),
+        // Once completed, keep it completed — never revert to false
+        ...(isCompleted ? { isCompleted: true, completedAt: new Date() } : {}),
       },
     });
 
-    // Update course progress
+    // Recalculate overall course progress and issue certificate if finished
     await this.updateCourseProgress(enrollment.id);
 
-    return lessonProgress;
+    // Return updated enrollment progress so Flutter can refresh in one call
+    const updated = await this.prisma.enrollment.findUnique({
+      where: { id: enrollment.id },
+      select: {
+        progressPercentage: true,
+        status: true,
+        completedAt: true,
+        certificate: { select: { id: true, certificateNumber: true, issuedAt: true } },
+      },
+    });
+
+    return {
+      lessonProgress,
+      courseProgress: updated,
+    };
   }
 
   private async updateCourseProgress(enrollmentId: string) {
-    // Get enrollment with all lesson progress
     const enrollment = await this.prisma.enrollment.findUnique({
       where: { id: enrollmentId },
       include: {
         course: {
           include: {
             sections: {
+              where: { isPublished: true },
               include: {
                 lessons: {
                   where: { isPublished: true },
+                  select: { id: true },
                 },
               },
             },
           },
         },
-        lessonProgress: true,
+        lessonProgress: {
+          where: { isCompleted: true },
+          select: { lessonId: true },
+        },
       },
     });
 
     if (!enrollment) return;
 
-    // Count total and completed lessons
-    const totalLessons = enrollment.course.sections.reduce(
-      (total, section) => total + section.lessons.length,
-      0,
+    // Only count published lessons against published lesson IDs
+    const publishedLessonIds = new Set(
+      enrollment.course.sections.flatMap((s) => s.lessons.map((l) => l.id)),
     );
-
-    const completedLessons = enrollment.lessonProgress.filter(
-      (progress) => progress.isCompleted,
+    const totalLessons = publishedLessonIds.size;
+    const completedLessons = enrollment.lessonProgress.filter((p) =>
+      publishedLessonIds.has(p.lessonId),
     ).length;
 
     const progressPercentage =
@@ -213,22 +230,21 @@ export class EnrollmentsService {
         ? Number(((completedLessons / totalLessons) * 100).toFixed(2))
         : 0;
 
-    const isCompleted = progressPercentage === 100;
+    const wasAlreadyComplete = !!(enrollment as any).completedAt;
+    const isNowComplete = totalLessons > 0 && completedLessons >= totalLessons;
 
-    // Update enrollment progress
     await this.prisma.enrollment.update({
       where: { id: enrollmentId },
       data: {
         progressPercentage,
-        status: isCompleted
-          ? EnrollmentStatus.COMPLETED
-          : EnrollmentStatus.ACTIVE,
-        completedAt: isCompleted ? new Date() : null,
+        status: isNowComplete ? EnrollmentStatus.COMPLETED : EnrollmentStatus.ACTIVE,
+        // Only set completedAt once — never reset it back to null
+        ...(isNowComplete && !wasAlreadyComplete ? { completedAt: new Date() } : {}),
       },
     });
 
-    // If course is completed, generate certificate
-    if (isCompleted && !enrollment.completedAt) {
+    // Issue certificate exactly once, the moment the course is first completed
+    if (isNowComplete && !wasAlreadyComplete) {
       await this.generateCertificate(enrollmentId);
     }
   }

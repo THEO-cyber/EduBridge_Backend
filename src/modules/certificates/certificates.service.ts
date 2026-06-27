@@ -137,7 +137,6 @@ export class CertificatesService {
         Body:               pdfBuffer,
         ContentType:        'application/pdf',
         ContentDisposition: `attachment; filename="${cert.certificateNumber}.pdf"`,
-        ServerSideEncryption: 'AES256',
       }),
     );
 

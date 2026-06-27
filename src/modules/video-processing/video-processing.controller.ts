@@ -12,6 +12,8 @@ import {
   BadRequestException,
   Header,
   Res,
+  HttpCode,
+  HttpStatus,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import {
@@ -141,6 +143,50 @@ export class VideoProcessingController {
     });
   }
 
+  // ── Fast upload (presigned URL) ──────────────────────────────────────────────
+
+  @Post('initiate-upload/:lessonId')
+  @UseGuards(RolesGuard)
+  @Roles(Role.INSTRUCTOR)
+  @ApiOperation({
+    summary: 'Get a presigned PUT URL — client uploads directly to MinIO/S3 (no NestJS buffer)',
+  })
+  @ApiBody({
+    schema: {
+      type: 'object',
+      required: ['filename', 'mimeType', 'fileSize'],
+      properties: {
+        filename: { type: 'string' },
+        mimeType: { type: 'string' },
+        fileSize: { type: 'number' },
+      },
+    },
+  })
+  async initiateUpload(
+    @Param('lessonId') lessonId: string,
+    @Body('filename') filename: string,
+    @Body('mimeType') mimeType: string,
+    @Body('fileSize') fileSize: number,
+    @CurrentUser() user: User,
+  ) {
+    if (!filename || !mimeType || !fileSize) {
+      throw new BadRequestException('filename, mimeType and fileSize are required');
+    }
+    return this.videoProcessingService.initiateUpload(lessonId, user.id, filename, mimeType, fileSize);
+  }
+
+  @Post('complete-upload/:videoId')
+  @UseGuards(RolesGuard)
+  @Roles(Role.INSTRUCTOR)
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Confirm direct upload finished and start transcoding' })
+  async completeUpload(
+    @Param('videoId') videoId: string,
+    @CurrentUser() user: User,
+  ) {
+    return this.videoProcessingService.completeUpload(videoId, user.id);
+  }
+
   // ── Process ─────────────────────────────────────────────────────────────────
 
   @Post('process')
@@ -172,14 +218,30 @@ export class VideoProcessingController {
 
   // ── Streaming ───────────────────────────────────────────────────────────────
 
-  @Get('stream/:videoId')
-  @ApiOperation({ summary: 'Get a signed streaming URL for a processed video' })
+  @Get('stream-url/:videoId')
+  @ApiOperation({ summary: 'Get a short-lived pre-signed URL for direct video playback' })
   @ApiQuery({ name: 'quality', required: false, enum: ['360p', '480p', '720p', '1080p'] })
-  async getStreamingUrl(
+  async getStreamUrl(
     @Param('videoId') videoId: string,
     @Query('quality') quality = '720p',
   ) {
     return this.videoProcessingService.generateSignedUrl(videoId, quality);
+  }
+
+  @Get('stream/:videoId')
+  @ApiOperation({
+    summary: 'Redirect to a short-lived presigned URL — client streams directly from MinIO/S3/CDN',
+  })
+  @ApiQuery({ name: 'quality', required: false, enum: ['360p', '480p', '720p', '1080p'] })
+  async streamVideo(
+    @Param('videoId') videoId: string,
+    @Query('quality') quality = '720p',
+    @Res() res: Response,
+  ) {
+    // Auth is checked by JwtAuthGuard at class level.
+    // NestJS only handles this one small request — actual video bytes never touch this process.
+    const { streamUrl } = await this.videoProcessingService.generateSignedUrl(videoId, quality);
+    (res as any).redirect(302, streamUrl);
   }
 
   @Get('hls/:videoId/manifest')

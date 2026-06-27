@@ -1,16 +1,16 @@
 import {
-  Controller, Get, Post, Patch, Delete, Body, Param, Query, UseGuards,
+  Controller, Get, Post, Patch, Delete, Body, Param, UseGuards,
 } from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiBearerAuth, ApiQuery } from '@nestjs/swagger';
+import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import {
   LessonsService, CreateSectionDto, UpdateSectionDto,
   CreateLessonDto, UpdateLessonDto, ReorderDto,
 } from './lessons.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
+import { OptionalJwtAuthGuard } from '../../common/guards/optional-jwt.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
-import { Public } from '../../common/decorators/public.decorator';
 import { Role, User } from '@prisma/client';
 
 @ApiTags('Lessons')
@@ -22,21 +22,21 @@ export class LessonsController {
 
   // ─── Sections ──────────────────────────────────────────────────────────────
 
-  @Post('sections')
+  @Post('sections/:courseId')
   @UseGuards(RolesGuard)
   @Roles(Role.INSTRUCTOR)
   @ApiOperation({ summary: 'Create a section in a course (instructor only)' })
   createSection(
-    @Query('courseId') courseId: string,
+    @Param('courseId') courseId: string,
     @Body() dto: CreateSectionDto,
     @CurrentUser() user: User,
   ) {
     return this.lessonsService.createSection(courseId, user.id, dto);
   }
 
-  @Public()
+  @UseGuards(OptionalJwtAuthGuard)
   @Get('sections/:courseId')
-  @ApiOperation({ summary: 'List all sections for a course' })
+  @ApiOperation({ summary: 'List all sections for a course (instructor sees draft sections; others see published only)' })
   getSections(@Param('courseId') courseId: string, @CurrentUser() user?: User) {
     return this.lessonsService.getSections(courseId, user?.id);
   }
@@ -83,10 +83,11 @@ export class LessonsController {
     return this.lessonsService.createLesson(user.id, dto);
   }
 
+  @UseGuards(OptionalJwtAuthGuard)
   @Get(':id')
-  @ApiOperation({ summary: 'Get lesson details (enrolled students or instructor)' })
-  getLesson(@Param('id') id: string, @CurrentUser() user: User) {
-    return this.lessonsService.getLesson(id, user.id);
+  @ApiOperation({ summary: 'Get lesson details (preview lessons are public; others require enrollment)' })
+  getLesson(@Param('id') id: string, @CurrentUser() user?: User) {
+    return this.lessonsService.getLesson(id, user?.id);
   }
 
   @Patch(':id')

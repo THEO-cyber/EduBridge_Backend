@@ -1,48 +1,33 @@
-# ── Stage 1: Build ────────────────────────────────────────────────────────────
-FROM node:20-alpine AS builder
+# Pre-build locally with: npm run build
+# Then run: docker build -t edubridge-api:latest . && docker compose up -d
 
-# Install build tools needed for native modules (bcrypt, etc.)
-RUN apk add --no-cache python3 make g++
-
-WORKDIR /app
-
-COPY package*.json ./
-COPY prisma ./prisma/
-
-RUN npm ci --legacy-peer-deps
-
-COPY . .
-
-RUN npm run build
-RUN npx prisma generate
-
-# ── Stage 2: Production image ─────────────────────────────────────────────────
 FROM node:20-alpine AS runner
 
-# ffmpeg-static bundles a Linux binary — it only works on Linux (perfect for Docker)
-# For the base image we keep it minimal; ffmpeg-static is included via npm
-RUN apk add --no-cache dumb-init
+# openssl is required by Prisma migration engine at runtime
+RUN apk add --no-cache dumb-init openssl
 
 WORKDIR /app
 
 ENV NODE_ENV=production
 
-# Copy only production dependencies
 COPY package*.json ./
 COPY prisma ./prisma/
 
-RUN npm ci --omit=dev --legacy-peer-deps && npx prisma generate
+# Install prod deps, generate Prisma client, then fix ownership of Prisma dirs
+# (only ~2 dirs, not all of node_modules — avoids the large-chown timeout)
+RUN npm ci --omit=dev --legacy-peer-deps --network-timeout 600000 \
+  && npx prisma generate \
+  && chown -R node:node /app/node_modules/.prisma \
+  && chown -R node:node /app/node_modules/@prisma
 
-# Copy built application
-COPY --from=builder /app/dist ./dist
-
-# Create uploads directory (for local dev fallback)
-RUN mkdir -p uploads && chown -R node:node /app
+# Copy pre-built app (dist/ must exist on host — run `npm run build` first)
+COPY --chown=node:node dist ./dist
+COPY docker/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh && mkdir -p uploads logs && chown node:node uploads logs
 
 USER node
 
 EXPOSE 3000
 
-# dumb-init handles PID 1 + signal forwarding (clean shutdown)
-ENTRYPOINT ["dumb-init", "--"]
+ENTRYPOINT ["dumb-init", "--", "/entrypoint.sh"]
 CMD ["node", "dist/main"]
