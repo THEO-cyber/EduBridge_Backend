@@ -267,25 +267,8 @@ export class NotificationsService {
 
     if (users.length === 0) return { sent: 0 };
 
-    const type = NotificationType.SYSTEM_ALERT;
-    const batchId = randomUUID();
-    await this.prisma.notification.createMany({
-      data: users.map((u) => ({
-        userId: u.id, type, title, message, actionUrl,
-        metadata: { ...(data ?? {}), batchId },
-      })),
-      skipDuplicates: true,
-    });
-
-    for (const u of users) {
-      if (this.notificationsGateway.isUserConnected(u.id)) {
-        this.notificationsGateway.sendNotificationToUser(u.id, { title, message, type, data, actionUrl });
-      } else {
-        this.sendPush(u.id, title, message, data).catch(() => {});
-      }
-    }
-
-    return { sent: users.length, batchId };
+    const userIds = users.map((u) => u.id);
+    return this._broadcastToUserIds(userIds, title, message, data, actionUrl);
   }
 
   async broadcastToUsers(
@@ -296,9 +279,20 @@ export class NotificationsService {
     actionUrl?: string,
   ) {
     if (userIds.length === 0) return { sent: 0 };
+    return this._broadcastToUserIds(userIds, title, message, data, actionUrl);
+  }
 
+  // Single DB round-trip for all device tokens — avoids N+1 per user
+  private async _broadcastToUserIds(
+    userIds: string[],
+    title: string,
+    message: string,
+    data?: Record<string, any>,
+    actionUrl?: string,
+  ) {
     const type = NotificationType.SYSTEM_ALERT;
     const batchId = randomUUID();
+
     await this.prisma.notification.createMany({
       data: userIds.map((userId) => ({
         userId, type, title, message, actionUrl,
@@ -307,11 +301,37 @@ export class NotificationsService {
       skipDuplicates: true,
     });
 
+    // Load ALL device tokens for ALL users in a single query
+    const allTokens = await this.prisma.deviceToken.findMany({
+      where: { userId: { in: userIds } },
+      select: { userId: true, token: true },
+    });
+
+    // Group tokens by userId
+    const tokensByUser = new Map<string, string[]>();
+    for (const { userId, token } of allTokens) {
+      const arr = tokensByUser.get(userId) ?? [];
+      arr.push(token);
+      tokensByUser.set(userId, arr);
+    }
+
+    const stringData: Record<string, string> = {};
+    if (data) {
+      for (const [k, v] of Object.entries(data)) {
+        stringData[k] = typeof v === 'string' ? v : JSON.stringify(v);
+      }
+    }
+
     for (const userId of userIds) {
       if (this.notificationsGateway.isUserConnected(userId)) {
         this.notificationsGateway.sendNotificationToUser(userId, { title, message, type, data, actionUrl });
       } else {
-        this.sendPush(userId, title, message, data).catch(() => {});
+        const tokens = tokensByUser.get(userId) ?? [];
+        if (tokens.length > 0) {
+          this.pushService
+            .sendToTokens(tokens, { title, body: message, data: stringData })
+            .catch(() => {});
+        }
       }
     }
 

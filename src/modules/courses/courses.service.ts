@@ -94,8 +94,21 @@ export class CoursesService {
   ) {
     const { page, limit, skip } = paginationDto;
 
-    // Cache key encodes all filter params so different queries don't collide
-    const cacheKey = `courses:list:${page}:${limit}:${JSON.stringify(filters ?? {})}`;
+    // Build a deterministic cache key — JSON.stringify doesn't guarantee key order,
+    // so { level, categoryId } and { categoryId, level } would be different keys.
+    const f = filters ?? {};
+    const cacheKey = [
+      'courses:list',
+      page,
+      limit,
+      f.status        ?? '',
+      f.level         ?? '',
+      f.categoryId    ?? '',
+      f.instructorId  ?? '',
+      f.search        ?? '',
+      f.minPrice      ?? '',
+      f.maxPrice      ?? '',
+    ].join(':');
     const cached = await this.cache.get<any>(cacheKey);
     if (cached) return cached;
 

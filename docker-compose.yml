@@ -70,6 +70,11 @@ services:
       start_period: 40s
     volumes:
       - uploads:/app/uploads
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+          cpus: '1.0'
     networks:
       - internal
 
@@ -101,6 +106,11 @@ services:
       - minio
     volumes:
       - uploads:/app/uploads
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+          cpus: '2.0'
     networks:
       - internal
 
@@ -113,8 +123,8 @@ services:
       POSTGRES_USER:     ${POSTGRES_USER:-edu}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-edu}
       POSTGRES_DB:       ${POSTGRES_DB:-edubridge}
-    ports:
-      - '5432:5432'   # Prisma Studio / local migrations
+    # Port NOT exposed to host in production — API reaches Postgres over internal network.
+    # To run Prisma Studio locally: docker compose --profile dev up studio
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -122,6 +132,10 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+    deploy:
+      resources:
+        limits:
+          memory: 1g
     networks:
       - internal
 
@@ -140,6 +154,10 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+    deploy:
+      resources:
+        limits:
+          memory: 384m
     networks:
       - internal
 
@@ -180,8 +198,8 @@ services:
       /bin/sh -c "
         mc alias set local http://minio:9000 $${MINIO_ROOT_USER} $${MINIO_ROOT_PASSWORD};
         mc mb --ignore-existing local/$${MINIO_BUCKET};
-        mc anonymous set download local/$${MINIO_BUCKET};
-        echo 'MinIO bucket ready: '$${MINIO_BUCKET};
+        mc anonymous set none local/$${MINIO_BUCKET};
+        echo 'MinIO bucket ready (private): '$${MINIO_BUCKET};
       "
     networks:
       - internal

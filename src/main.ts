@@ -13,11 +13,12 @@ import cookieParser from 'cookie-parser';
 // bootstrap() AFTER the Redis probe sets REDIS_AVAILABLE.  This ensures that
 // VideoProcessingModule's module-level code runs with the correct env var value.
 import { AllExceptionsFilter } from './common/filters/http-exception.filter';
-import { CorrelationIdMiddleware } from './common/middleware/correlation-id.middleware';
 import { TimeoutInterceptor } from './common/interceptors/timeout.interceptor';
 import { MetricsInterceptor } from './common/interceptors/metrics.interceptor';
 import { ResponseInterceptor } from './common/interceptors/response.interceptor';
 import { probeRedis } from './common/redis/redis-connection.factory';
+
+const IS_WORKER = process.env.WORKER_MODE === 'true';
 
 async function bootstrap() {
   console.log('[BOOT] Step 1: probing Redis...');
@@ -41,11 +42,6 @@ async function bootstrap() {
   app.useLogger(logger);
   console.log('[BOOT] Step 4: logger wired');
 
-  const configService = app.get(ConfigService);
-  const port    = configService.get<number>('port', 3000);
-  const nodeEnv = configService.get<string>('nodeEnv', 'development');
-  const isProd  = nodeEnv === 'production';
-
   if (redisAvailable) {
     logger.log(`Redis detected at ${redisHost}:${redisPort} ✓`, 'Bootstrap');
   } else {
@@ -55,8 +51,21 @@ async function bootstrap() {
     );
   }
 
-  // ── Correlation IDs ─────────────────────────────────────────────────────────
-  app.use(new CorrelationIdMiddleware().use.bind(new CorrelationIdMiddleware()));
+  // ── Worker mode: skip HTTP server entirely ────────────────────────────────────
+  // BullMQ processors register via NestJS DI — we still need app.init().
+  // We do NOT call app.listen() so no HTTP port is opened.
+  if (IS_WORKER) {
+    app.enableShutdownHooks();
+    await app.init();
+    logger.log('Worker process started — HTTP server disabled, BullMQ processors active', 'Bootstrap');
+    logger.log(`Environment → ${process.env.NODE_ENV}`, 'Bootstrap');
+    return;
+  }
+
+  const configService = app.get(ConfigService);
+  const port    = configService.get<number>('port', 3000);
+  const nodeEnv = configService.get<string>('nodeEnv', 'development');
+  const isProd  = nodeEnv === 'production';
 
   // ── Security ────────────────────────────────────────────────────────────────
   app.use(
@@ -92,7 +101,7 @@ async function bootstrap() {
   app.useGlobalPipes(
     new ValidationPipe({
       whitelist: true,
-      forbidNonWhitelisted: false,
+      forbidNonWhitelisted: true,
       transform: true,
       transformOptions: { enableImplicitConversion: true },
       stopAtFirstError: false,
@@ -149,9 +158,9 @@ async function bootstrap() {
   await app.listen(port, '0.0.0.0');
   console.log('[BOOT] Step 6: listening!');
 
-  logger.log(`🚀 EduBridge API  → http://localhost:${port}/api/v1`,  'Bootstrap');
-  if (swaggerEnabled) logger.log(`📚 Swagger docs   → http://localhost:${port}/api/docs`, 'Bootstrap');
-  logger.log(`🌍 Environment    → ${nodeEnv}`, 'Bootstrap');
+  logger.log(`EduBridge API  → http://localhost:${port}/api/v1`,  'Bootstrap');
+  if (swaggerEnabled) logger.log(`Swagger docs   → http://localhost:${port}/api/docs`, 'Bootstrap');
+  logger.log(`Environment    → ${nodeEnv}`, 'Bootstrap');
 }
 
 process.on('unhandledRejection', (reason) => {

@@ -20,9 +20,12 @@ export class EmailService {
     this.useQueue = !!emailQueue && process.env.REDIS_AVAILABLE === 'true';
 
     this.transporter = nodemailer.createTransport({
-      host:   this.configService.get<string>('email.host') || 'smtp.gmail.com',
-      port:   this.configService.get<number>('email.port') || 587,
-      secure: (this.configService.get<number>('email.port') || 587) === 465,
+      host:           this.configService.get<string>('email.host') || 'smtp.gmail.com',
+      port:           this.configService.get<number>('email.port') || 587,
+      secure:         (this.configService.get<number>('email.port') || 587) === 465,
+      pool:           true,   // reuse SMTP connections across concurrent jobs
+      maxConnections: 5,      // matches BullMQ email concurrency
+      maxMessages:    100,
       auth: {
         user: this.configService.get<string>('email.user'),
         pass: this.configService.get<string>('email.pass'),

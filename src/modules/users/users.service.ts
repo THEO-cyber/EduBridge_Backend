@@ -219,24 +219,43 @@ export class UsersService {
   }
 
   async deleteAccount(id: string) {
-    try {
-      // Soft delete - deactivate account
-      await this.prisma.user.update({
+    const user = await this.prisma.user.findUnique({ where: { id } });
+    if (!user) throw new NotFoundException('User not found');
+
+    const tombstone = `deleted_${Date.now()}_${id}`;
+
+    // GDPR erasure in a single transaction:
+    // - Wipe all PII and credentials from the user record
+    // - Delete device tokens, notifications, wishlist entries
+    // - Payment/enrollment records are retained for financial compliance
+    //   but the user's PII fields are anonymised above
+    await this.prisma.$transaction([
+      // Erase auth credentials so account cannot be used
+      this.prisma.userAuth.deleteMany({ where: { userId: id } }),
+      // Remove push notification tokens
+      this.prisma.deviceToken.deleteMany({ where: { userId: id } }),
+      // Remove in-app notifications
+      this.prisma.notification.deleteMany({ where: { userId: id } }),
+      // Remove wishlist (no financial/legal reason to retain)
+      this.prisma.wishlist.deleteMany({ where: { userId: id } }),
+      // Anonymise the user record — keep the row for relational integrity
+      // (enrollments, payment records reference userId)
+      this.prisma.user.update({
         where: { id },
         data: {
-          isActive: false,
-          email: `deleted_${Date.now()}_${id}@deleted.com`,
-          username: `deleted_${Date.now()}_${id}`,
+          isActive:        false,
+          email:           `${tombstone}@deleted.invalid`,
+          username:        tombstone,
+          firstName:       'Deleted',
+          lastName:        'User',
+          avatar:          null,
+          bio:             null,
+          isEmailVerified: false,
         },
-      });
+      }),
+    ]);
 
-      return { message: 'Account successfully deactivated' };
-    } catch (error) {
-      if (error instanceof Error && (error as any).code === 'P2025') {
-        throw new NotFoundException('User not found');
-      }
-      throw error;
-    }
+    return { message: 'Account and personal data permanently deleted' };
   }
 
   async getCourseStudents(instructorId: string, courseId: string, paginationDto: PaginationDto) {

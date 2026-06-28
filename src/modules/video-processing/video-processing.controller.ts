@@ -101,10 +101,16 @@ export class VideoProcessingController {
 
   // ── Upload ──────────────────────────────────────────────────────────────────
 
+  // @deprecated — buffers the entire file in Node.js memory. Only suitable for
+  // files under 100 MB. For larger videos use POST /initiate-upload + PUT to
+  // the presigned URL + POST /complete-upload (no NestJS buffering at all).
   @Post('upload/:lessonId')
   @UseGuards(RolesGuard)
   @Roles(Role.INSTRUCTOR)
-  @ApiOperation({ summary: 'Upload a video for a lesson (instructor only)' })
+  @ApiOperation({
+    summary: '[Deprecated] Direct upload — max 100 MB. Use initiate-upload for larger files.',
+    deprecated: true,
+  })
   @ApiConsumes('multipart/form-data')
   @ApiBody({
     schema: {
@@ -114,7 +120,7 @@ export class VideoProcessingController {
   })
   @UseInterceptors(
     FileInterceptor('video', {
-      limits: { fileSize: 2 * 1024 * 1024 * 1024 }, // 2 GB
+      limits: { fileSize: 100 * 1024 * 1024 }, // 100 MB hard cap — prevents OOM
       fileFilter: (_req, file, cb) => {
         if (!file.mimetype.startsWith('video/')) {
           return cb(new BadRequestException('Only video files are allowed'), false);
