@@ -5,9 +5,9 @@ import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import { ConfigService } from '@nestjs/config';
 import { NestExpressApplication } from '@nestjs/platform-express';
 import { WINSTON_MODULE_NEST_PROVIDER } from 'nest-winston';
-const helmet = require('helmet');
-const compression = require('compression');
-const cookieParser = require('cookie-parser');
+import helmet from 'helmet';
+import compression from 'compression';
+import cookieParser from 'cookie-parser';
 
 // AppModule is NOT statically imported here — it is dynamically imported inside
 // bootstrap() AFTER the Redis probe sets REDIS_AVAILABLE.  This ensures that
@@ -15,6 +15,8 @@ const cookieParser = require('cookie-parser');
 import { AllExceptionsFilter } from './common/filters/http-exception.filter';
 import { CorrelationIdMiddleware } from './common/middleware/correlation-id.middleware';
 import { TimeoutInterceptor } from './common/interceptors/timeout.interceptor';
+import { MetricsInterceptor } from './common/interceptors/metrics.interceptor';
+import { ResponseInterceptor } from './common/interceptors/response.interceptor';
 import { probeRedis } from './common/redis/redis-connection.factory';
 
 async function bootstrap() {
@@ -98,7 +100,11 @@ async function bootstrap() {
   );
 
   app.useGlobalFilters(new AllExceptionsFilter());
-  app.useGlobalInterceptors(new TimeoutInterceptor(30_000));
+  app.useGlobalInterceptors(
+    new MetricsInterceptor(),
+    new ResponseInterceptor(),
+    new TimeoutInterceptor(30_000),
+  );
 
   // ── Swagger ──────────────────────────────────────────────────────────────────
   const swaggerEnabled = !isProd || process.env.SWAGGER_ENABLED === 'true';

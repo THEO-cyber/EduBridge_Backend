@@ -1,16 +1,23 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { InjectQueue } from '@nestjs/bullmq';
 import * as nodemailer from 'nodemailer';
 import type { Transporter } from 'nodemailer';
+import { EMAIL_QUEUE, SendEmailJob } from './email.queue.processor';
 
 @Injectable()
 export class EmailService {
   private readonly logger = new Logger(EmailService.name);
   private transporter: Transporter;
   private readonly from: string;
+  private readonly useQueue: boolean;
 
-  constructor(private readonly configService: ConfigService) {
+  constructor(
+    private readonly configService: ConfigService,
+    @Optional() @InjectQueue(EMAIL_QUEUE) private readonly emailQueue?: any,
+  ) {
     this.from = this.configService.get<string>('email.from') || 'noreply@edubridge.com';
+    this.useQueue = !!emailQueue && process.env.REDIS_AVAILABLE === 'true';
 
     this.transporter = nodemailer.createTransport({
       host:   this.configService.get<string>('email.host') || 'smtp.gmail.com',
@@ -23,7 +30,10 @@ export class EmailService {
     });
   }
 
-  // ─── Core send (non-blocking, retries up to 3×) ───────────────────────────
+  // ─── Core send ────────────────────────────────────────────────────────────
+  // When Redis is available: enqueue the job (BullMQ handles 3 retries with
+  // exponential backoff, persistent across restarts, visible in Bull Board).
+  // When Redis is unavailable: fire-and-forget with in-process retry.
 
   private async send(to: string, subject: string, html: string): Promise<void> {
     if (!this.configService.get<string>('email.user')) {
@@ -31,19 +41,30 @@ export class EmailService {
       return;
     }
 
+    if (this.useQueue && this.emailQueue) {
+      await this.emailQueue.add(
+        'send-email',
+        { to, subject, html },
+        { attempts: 3, backoff: { type: 'exponential', delay: 2_000 }, removeOnComplete: 50, removeOnFail: 20 },
+      );
+      this.logger.debug(`Email queued → ${to}: ${subject}`);
+      return;
+    }
+
+    // Fallback: direct send with in-process retry
     const MAX_ATTEMPTS = 3;
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
       try {
         await this.transporter.sendMail({ from: this.from, to, subject, html });
-        this.logger.log(`Email sent → ${to}: ${subject}`);
+        this.logger.log(`Email sent (direct) → ${to}: ${subject}`);
         return;
       } catch (error: any) {
         if (attempt < MAX_ATTEMPTS) {
-          const delay = 1000 * 2 ** (attempt - 1); // 1s, 2s
+          const delay = 1000 * 2 ** (attempt - 1);
           this.logger.warn(`Email attempt ${attempt} failed (retry in ${delay}ms) → ${to}: ${error.message}`);
           await new Promise((r) => setTimeout(r, delay));
         } else {
-          this.logger.error(`Email permanently failed after ${MAX_ATTEMPTS} attempts → ${to}: ${error.message}`);
+          this.logger.error(`Email permanently failed → ${to}: ${error.message}`);
         }
       }
     }

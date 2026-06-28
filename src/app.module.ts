@@ -45,6 +45,7 @@ import { NotesModule } from './modules/notes/notes.module';
 import { ReportsModule } from './modules/reports/reports.module';
 import { ApplicationsModule } from './modules/applications/applications.module';
 import { EmailPreferencesModule } from './modules/email-preferences/email-preferences.module';
+import { MetricsModule } from './common/metrics/metrics.module';
 
 @Module({
   imports: [
@@ -92,6 +93,7 @@ import { EmailPreferencesModule } from './modules/email-preferences/email-prefer
     FirebaseModule,
     CacheModule,
     HealthModule,
+    MetricsModule,
 
     // ── Feature modules ───────────────────────────────────────────────────────
     AuthModule,

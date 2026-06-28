@@ -2,13 +2,17 @@ import {
   Injectable,
   NotFoundException,
   BadRequestException,
+  Optional,
+  Logger,
 } from '@nestjs/common';
 import { randomUUID } from 'crypto';
+import { InjectQueue } from '@nestjs/bullmq';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { NotificationsGateway } from './notifications.gateway';
 import { FirebasePushService } from '../../common/firebase/firebase-push.service';
 import { PaginationDto } from '../../common/dto/pagination.dto';
 import { NotificationType } from '@prisma/client';
+import { NOTIFICATION_QUEUE, NotificationJob } from './notification.queue.processor';
 
 export interface CreateNotificationData {
   userId: string;
@@ -21,11 +25,17 @@ export interface CreateNotificationData {
 
 @Injectable()
 export class NotificationsService {
+  private readonly logger = new Logger(NotificationsService.name);
+  private readonly useQueue: boolean;
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly notificationsGateway: NotificationsGateway,
     private readonly pushService: FirebasePushService,
-  ) {}
+    @Optional() @InjectQueue(NOTIFICATION_QUEUE) private readonly notifQueue?: any,
+  ) {
+    this.useQueue = !!notifQueue && process.env.REDIS_AVAILABLE === 'true';
+  }
 
   // ─── Device token management ────────────────────────────────────────────────
 
@@ -61,8 +71,28 @@ export class NotificationsService {
   }
 
   // ─── Core notification dispatch ─────────────────────────────────────────────
+  // When Redis is available: notification creation + push are offloaded to the
+  // BullMQ worker so the caller's request is never delayed by FCM latency.
+  // When Redis is unavailable: falls back to synchronous creation (same as before).
 
   async createNotification(data: CreateNotificationData) {
+    if (this.useQueue && this.notifQueue) {
+      await this.notifQueue.add(
+        'create-notification',
+        {
+          userId:    data.userId,
+          type:      data.type,
+          title:     data.title,
+          message:   data.message,
+          actionUrl: data.actionUrl,
+          metadata:  data.data,
+        },
+        { attempts: 2, backoff: { type: 'fixed', delay: 3_000 }, removeOnComplete: 100, removeOnFail: 50 },
+      );
+      return { queued: true };
+    }
+
+    // Synchronous fallback
     const notification = await this.prisma.notification.create({
       data: {
         userId:    data.userId,
@@ -84,6 +114,24 @@ export class NotificationsService {
   }
 
   async createBulkNotifications(notifications: CreateNotificationData[]) {
+    if (this.useQueue && this.notifQueue) {
+      const jobs = notifications.map((n) => ({
+        name: 'create-notification' as const,
+        data: {
+          userId:    n.userId,
+          type:      n.type,
+          title:     n.title,
+          message:   n.message,
+          actionUrl: n.actionUrl,
+          metadata:  n.data,
+        },
+        opts: { attempts: 2, backoff: { type: 'fixed', delay: 3_000 }, removeOnComplete: 100, removeOnFail: 50 },
+      }));
+      await this.notifQueue.addBulk(jobs);
+      return { queued: notifications.length };
+    }
+
+    // Synchronous fallback
     const result = await this.prisma.notification.createMany({
       data: notifications.map((n) => ({
         userId:    n.userId,
@@ -96,7 +144,6 @@ export class NotificationsService {
       skipDuplicates: true,
     });
 
-    // Fire push + WS for each
     for (const n of notifications) {
       const saved = await this.prisma.notification.findFirst({
         where: { userId: n.userId, type: n.type, title: n.title },

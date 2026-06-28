@@ -12,6 +12,7 @@ import {
   ParseIntPipe,
   BadRequestException,
 } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import {
   ApiTags,
   ApiOperation,
@@ -101,6 +102,7 @@ class UpdateNotificationDto {
 @ApiBearerAuth('JWT-auth')
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Roles(Role.ADMIN)
+@Throttle({ default: { ttl: 60_000, limit: 60 } })
 @Controller('admin')
 export class AdminController {
   constructor(

@@ -102,6 +102,7 @@ export class CoursesService {
     const where: any = {
       isPublished: true,
       status: CourseStatus.PUBLISHED,
+      deletedAt: null,
     };
 
     if (filters) {
@@ -183,8 +184,8 @@ export class CoursesService {
 
     let course = cachedCourse;
     if (!course) {
-      course = await this.prisma.course.findUnique({
-        where: { id },
+      course = await this.prisma.course.findFirst({
+        where: { id, deletedAt: null },
         include: {
           instructor: {
             select: {
@@ -379,31 +380,22 @@ export class CoursesService {
   }
 
   async remove(id: string, instructorId: string) {
-    // Check if course exists and user is the instructor
-    const course = await this.prisma.course.findUnique({
-      where: { id },
-      include: {
-        enrollments: true,
-      },
+    const course = await this.prisma.course.findFirst({
+      where: { id, deletedAt: null },
+      include: { enrollments: { where: { status: { in: ['ACTIVE', 'COMPLETED'] } } } },
     });
 
-    if (!course) {
-      throw new NotFoundException('Course not found');
-    }
+    if (!course) throw new NotFoundException('Course not found');
+    if (course.instructorId !== instructorId) throw new ForbiddenException('Not authorized to delete this course');
 
-    if (course.instructorId !== instructorId) {
-      throw new ForbiddenException('Not authorized to delete this course');
-    }
-
-    // Check if course has active enrollments
     if (course.enrollments.length > 0) {
-      throw new BadRequestException(
-        'Cannot delete course with active enrollments',
-      );
+      throw new BadRequestException('Cannot delete a course with active enrollments');
     }
 
-    await this.prisma.course.delete({
+    // Soft delete — preserves data for analytics and audit trail
+    await this.prisma.course.update({
       where: { id },
+      data: { deletedAt: new Date(), isPublished: false, status: CourseStatus.ARCHIVED },
     });
 
     await Promise.all([
@@ -494,7 +486,7 @@ export class CoursesService {
 
     const [courses, total] = await Promise.all([
       this.prisma.course.findMany({
-        where: { instructorId },
+        where: { instructorId, deletedAt: null },
         skip,
         take: limit,
         include: {
@@ -509,7 +501,7 @@ export class CoursesService {
         },
         orderBy: { createdAt: 'desc' },
       }),
-      this.prisma.course.count({ where: { instructorId } }),
+      this.prisma.course.count({ where: { instructorId, deletedAt: null } }),
     ]);
 
     return {

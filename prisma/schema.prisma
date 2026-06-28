@@ -260,6 +260,7 @@ model Course {
   totalRevenue     Decimal      @default(0) @db.Decimal(10, 2)
   rating           Decimal      @default(0) @db.Decimal(3, 2)
   totalReviews     Int          @default(0)
+  deletedAt        DateTime?
   createdAt        DateTime     @default(now())
   updatedAt        DateTime     @updatedAt
 
@@ -278,6 +279,7 @@ model Course {
   @@index([instructorId])
   @@index([categoryId])
   @@index([rating])
+  @@index([deletedAt])
   @@map("courses")
 }
 
