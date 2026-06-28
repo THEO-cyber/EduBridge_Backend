@@ -244,16 +244,38 @@ export class AuthController {
   @Public()
   @Get('google/callback')
   @UseGuards(GoogleAuthGuard)
-  @ApiOperation({ summary: 'Google OAuth callback — returns JWT tokens' })
+  @ApiOperation({ summary: 'Google OAuth callback — sets httpOnly cookies and redirects' })
   async googleCallback(@Req() req: any, @Res() res: any) {
     const result = await this.authService.googleLogin(req.user);
-    // For mobile/SPA apps, redirect with tokens in query params
-    // In production, use a short-lived code instead of tokens in URL
     const frontendUrl = process.env.FRONTEND_URL?.split(',')[0] ?? 'http://localhost:3000';
-    const params = new URLSearchParams({
-      accessToken:  result.accessToken,
-      refreshToken: result.refreshToken,
+    const isProd = process.env.NODE_ENV === 'production';
+
+    // Set tokens in httpOnly cookies — never expose in URL (prevents referer/history leakage)
+    res.cookie('accessToken', result.accessToken, {
+      httpOnly: true,
+      secure:   isProd,
+      sameSite: isProd ? 'strict' : 'lax',
+      maxAge:   7 * 24 * 60 * 60 * 1000, // 7 days
     });
-    res.redirect(`${frontendUrl}/auth/google/success?${params.toString()}`);
+    res.cookie('refreshToken', result.refreshToken, {
+      httpOnly: true,
+      secure:   isProd,
+      sameSite: isProd ? 'strict' : 'lax',
+      maxAge:   30 * 24 * 60 * 60 * 1000, // 30 days
+      path:     '/api/v1/auth/refresh',
+    });
+
+    // Redirect with only a success flag — no tokens in URL
+    res.redirect(`${frontendUrl}/auth/google/success?login=1`);
+  }
+
+  @Public()
+  @Get('google/token')
+  @UseGuards(GoogleAuthGuard)
+  @ApiOperation({ summary: 'Exchange Google OAuth cookie for JSON tokens (mobile clients)' })
+  async googleToken(@Req() req: any) {
+    // Mobile apps (Flutter) that can't use cookies call this after the redirect
+    // The guard validates the session and returns tokens in the response body
+    return this.authService.googleLogin(req.user);
   }
 }

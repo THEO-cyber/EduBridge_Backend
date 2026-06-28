@@ -1,49 +1,60 @@
-import { Controller, Get } from '@nestjs/common';
+import { Controller, Get, ServiceUnavailableException } from '@nestjs/common';
 import { ApiTags, ApiOperation } from '@nestjs/swagger';
 import { PrismaService } from '../prisma/prisma.service';
+import { CacheService } from '../cache/cache.service';
+import { Public } from '../decorators/public.decorator';
 
 @ApiTags('Health')
 @Controller('health')
 export class HealthController {
-  constructor(private readonly prismaService: PrismaService) {}
+  constructor(
+    private readonly prismaService: PrismaService,
+    private readonly cacheService: CacheService,
+  ) {}
 
+  @Public()
   @Get()
-  @ApiOperation({ summary: 'Health check endpoint' })
+  @ApiOperation({ summary: 'Health check — returns status of all services' })
   async healthCheck() {
-    const dbHealth = await this.prismaService.healthCheck();
+    const [dbOk, redisOk] = await Promise.all([
+      this.prismaService.healthCheck(),
+      this.cacheService.ping(),
+    ]);
 
+    const mem = process.memoryUsage();
     return {
-      status: 'ok',
+      status: dbOk ? 'ok' : 'degraded',
       timestamp: new Date().toISOString(),
-      uptime: process.uptime(),
+      uptime: Math.round(process.uptime()),
       environment: process.env.NODE_ENV,
-      database: dbHealth ? 'connected' : 'disconnected',
+      version: process.env.APP_VERSION ?? '1.0.0',
+      services: {
+        database: dbOk  ? 'connected'    : 'disconnected',
+        cache:    redisOk ? 'connected'  : 'unavailable',
+      },
       memory: {
-        used:
-          Math.round((process.memoryUsage().heapUsed / 1024 / 1024) * 100) /
-          100,
-        total:
-          Math.round((process.memoryUsage().heapTotal / 1024 / 1024) * 100) /
-          100,
+        heapUsedMb:  Math.round((mem.heapUsed  / 1024 / 1024) * 10) / 10,
+        heapTotalMb: Math.round((mem.heapTotal / 1024 / 1024) * 10) / 10,
+        rssMb:       Math.round((mem.rss       / 1024 / 1024) * 10) / 10,
       },
     };
   }
 
+  @Public()
   @Get('ready')
-  @ApiOperation({ summary: 'Readiness probe for Kubernetes' })
+  @ApiOperation({ summary: 'Readiness probe — 503 if DB is unreachable' })
   async readiness() {
-    const dbHealth = await this.prismaService.healthCheck();
-
-    if (!dbHealth) {
-      throw new Error('Database is not ready');
+    const dbOk = await this.prismaService.healthCheck();
+    if (!dbOk) {
+      throw new ServiceUnavailableException('Database is not ready');
     }
-
     return { status: 'ready' };
   }
 
+  @Public()
   @Get('live')
-  @ApiOperation({ summary: 'Liveness probe for Kubernetes' })
+  @ApiOperation({ summary: 'Liveness probe — always 200 while process is running' })
   liveness() {
-    return { status: 'alive' };
+    return { status: 'alive', timestamp: new Date().toISOString() };
   }
 }

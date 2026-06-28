@@ -8,6 +8,7 @@ import {
 } from '@nestjs/common';
 import { Request, Response } from 'express';
 import { Prisma } from '@prisma/client';
+import * as Sentry from '@sentry/nestjs';
 
 @Catch()
 export class AllExceptionsFilter implements ExceptionFilter {
@@ -65,6 +66,15 @@ export class AllExceptionsFilter implements ExceptionFilter {
         `${request.method} ${request.url} → ${status}`,
         exception instanceof Error ? exception.stack : String(exception),
       );
+      // Report all 5xx errors to Sentry with request context
+      Sentry.withScope((scope) => {
+        scope.setTag('http.method', request.method);
+        scope.setTag('http.url', request.url);
+        scope.setTag('http.status', String(status));
+        scope.setExtra('correlationId', (request.headers as any)['x-correlation-id']);
+        scope.setExtra('body', request.body);
+        Sentry.captureException(exception);
+      });
     } else {
       this.logger.warn(`${request.method} ${request.url} → ${status}: ${message}`);
     }

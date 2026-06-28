@@ -185,12 +185,9 @@ export class AuthService {
     });
 
     const frontendUrl = this.configService.get<string>('frontendUrl') ?? '';
-    await this.emailService.sendEmailVerification(
-      user.email,
-      `${user.firstName} ${user.lastName}`,
-      rawToken,
-      frontendUrl,
-    );
+    this.emailService
+      .sendEmailVerification(user.email, `${user.firstName} ${user.lastName}`, rawToken, frontendUrl)
+      .catch((e) => this.logger.warn(`Resend verification email failed: ${e.message}`));
 
     return { message: 'Verification email sent' };
   }

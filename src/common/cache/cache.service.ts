@@ -85,6 +85,15 @@ export class CacheService implements OnModuleInit, OnModuleDestroy {
     } catch {}
   }
 
+  async ping(): Promise<boolean> {
+    if (!this.connected || !this.client) return false;
+    try {
+      return (await this.client.ping()) === 'PONG';
+    } catch {
+      return false;
+    }
+  }
+
   // ── Cache-aside helper ────────────────────────────────────────────────────
 
   async getOrSet<T>(key: string, factory: () => Promise<T>, ttlSeconds = 300): Promise<T> {

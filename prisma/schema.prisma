@@ -118,14 +118,14 @@ model User {
   reviews                   Review[]
   notifications             Notification[]
   chatParticipants          ChatParticipant[]
-  chatMessages              ChatMessage[]       @relation("ChatMessageSender")
-  courseCreated             Course[]            @relation("CourseInstructor")
+  chatMessages              ChatMessage[]          @relation("ChatMessageSender")
+  courseCreated             Course[]               @relation("CourseInstructor")
   wishlistItems             Wishlist[]
   certificates              Certificate[]
-  sessionRequests           SessionRequest[]    @relation("StudentRequests")
-  sessionRequestsInstructor SessionRequest[]    @relation("InstructorRequests")
-  sessionInstructor         LiveSession[]       @relation("SessionInstructor")
-  sessionStudent            LiveSession[]       @relation("SessionStudent")
+  sessionRequests           SessionRequest[]       @relation("StudentRequests")
+  sessionRequestsInstructor SessionRequest[]       @relation("InstructorRequests")
+  sessionInstructor         LiveSession[]          @relation("SessionInstructor")
+  sessionStudent            LiveSession[]          @relation("SessionStudent")
   analytics                 UserAnalytics?
   deviceTokens              DeviceToken[]
   courseAnnouncements       CourseAnnouncement[]
@@ -141,34 +141,36 @@ model User {
 }
 
 model UserAuth {
-  id                          String    @id @default(cuid())
-  userId                      String    @unique
-  passwordHash                String?
-  googleId                    String?   @unique
-  refreshToken                String?
-  refreshTokenHash            String?
-  emailVerificationToken      String?
-  emailVerificationTokenHash  String?
-  passwordResetToken          String?
-  passwordResetTokenHash      String?
-  passwordResetExpires        DateTime?
-  passwordResetCount          Int       @default(0)
-  passwordResetWindowStart    DateTime?
-  loginAttempts               Int       @default(0)
-  lockedUntil                 DateTime?
-  twoFactorEnabled            Boolean   @default(false)
-  twoFactorSecret             String?
-  createdAt                   DateTime  @default(now())
-  updatedAt                   DateTime  @updatedAt
+  id                         String    @id @default(cuid())
+  userId                     String    @unique
+  passwordHash               String?
+  googleId                   String?   @unique
+  refreshToken               String?
+  refreshTokenHash           String?
+  emailVerificationToken     String?
+  emailVerificationTokenHash String?
+  passwordResetToken         String?
+  passwordResetTokenHash     String?
+  passwordResetExpires       DateTime?
+  passwordResetCount         Int       @default(0)
+  passwordResetWindowStart   DateTime?
+  loginAttempts              Int       @default(0)
+  lockedUntil                DateTime?
+  twoFactorEnabled           Boolean   @default(false)
+  twoFactorSecret            String?
+  createdAt                  DateTime  @default(now())
+  updatedAt                  DateTime  @updatedAt
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
+  @@index([emailVerificationTokenHash])
+  @@index([passwordResetTokenHash])
   @@map("user_auth")
 }
 
 model InstructorProfile {
-  id                     String    @id @default(cuid())
-  userId                 String    @unique
+  id                     String   @id @default(cuid())
+  userId                 String   @unique
   title                  String?
   expertise              String[]
   experience             String?
@@ -176,17 +178,17 @@ model InstructorProfile {
   certifications         String[]
   website                String?
   socialLinks            Json?
-  hourlyRate             Decimal?  @db.Decimal(10, 2)
-  isVerified             Boolean   @default(false)
+  hourlyRate             Decimal? @db.Decimal(10, 2)
+  isVerified             Boolean  @default(false)
   verificationDocuments  String[]
   payoutAccountId        String?
-  rating                 Decimal   @default(0) @db.Decimal(3, 2)
-  totalReviews           Int       @default(0)
-  totalStudents          Int       @default(0)
-  totalRevenue           Decimal   @default(0) @db.Decimal(10, 2)
-  isAvailableForSessions Boolean   @default(true)
-  createdAt              DateTime  @default(now())
-  updatedAt              DateTime  @updatedAt
+  rating                 Decimal  @default(0) @db.Decimal(3, 2)
+  totalReviews           Int      @default(0)
+  totalStudents          Int      @default(0)
+  totalRevenue           Decimal  @default(0) @db.Decimal(10, 2)
+  isAvailableForSessions Boolean  @default(true)
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
 
   user              User               @relation(fields: [userId], references: [id], onDelete: Cascade)
   availabilitySlots AvailabilitySlot[]
@@ -261,16 +263,16 @@ model Course {
   createdAt        DateTime     @default(now())
   updatedAt        DateTime     @updatedAt
 
-  instructor     User                 @relation("CourseInstructor", fields: [instructorId], references: [id])
-  category       Category             @relation(fields: [categoryId], references: [id])
-  sections       Section[]
-  enrollments    Enrollment[]
-  reviews        Review[]
-  wishlistItems  Wishlist[]
-  coupons        Coupon[]
-  analytics      CourseAnalytics?
-  announcements  CourseAnnouncement[]
-  liveSessions   LiveSession[]        @relation("CourseLiveSessions")
+  instructor    User                 @relation("CourseInstructor", fields: [instructorId], references: [id])
+  category      Category             @relation(fields: [categoryId], references: [id])
+  sections      Section[]
+  enrollments   Enrollment[]
+  reviews       Review[]
+  wishlistItems Wishlist[]
+  coupons       Coupon[]
+  analytics     CourseAnalytics?
+  announcements CourseAnnouncement[]
+  liveSessions  LiveSession[]        @relation("CourseLiveSessions")
 
   @@index([status, isPublished])
   @@index([instructorId])
@@ -341,7 +343,7 @@ model Video {
   createdAt             DateTime    @default(now())
   updatedAt             DateTime    @updatedAt
 
-  lesson   Lesson?       @relation(fields: [lessonId], references: [id], onDelete: Cascade)
+  lesson   Lesson?        @relation(fields: [lessonId], references: [id], onDelete: Cascade)
   variants VideoVariant[]
 
   @@index([lessonId])
@@ -410,6 +412,7 @@ model Enrollment {
   @@unique([userId, courseId])
   @@index([userId])
   @@index([courseId])
+  @@index([userId, status])
   @@map("enrollments")
 }
 
@@ -428,6 +431,7 @@ model LessonProgress {
 
   @@unique([enrollmentId, lessonId])
   @@index([enrollmentId])
+  @@index([lessonId])
   @@map("lesson_progress")
 }
 
@@ -455,13 +459,13 @@ model SessionRequest {
   id            String        @id @default(cuid())
   studentId     String
   instructorId  String
-  liveSessionId String?                          // application to an instructor-created session
+  liveSessionId String? // application to an instructor-created session
   title         String
   description   String?
-  preferredDate DateTime?                        // optional — not needed for group session applications
+  preferredDate DateTime? // optional — not needed for group session applications
   duration      Int           @default(60)
-  hourlyRate    Decimal       @db.Decimal(10, 2) @default(0)
-  totalAmount   Decimal       @db.Decimal(10, 2) @default(0)
+  hourlyRate    Decimal       @default(0) @db.Decimal(10, 2)
+  totalAmount   Decimal       @default(0) @db.Decimal(10, 2)
   currency      String        @default("USD")
   status        SessionStatus @default(SCHEDULED)
   message       String?
@@ -481,20 +485,20 @@ model SessionRequest {
 
 model LiveSession {
   id               String        @id @default(cuid())
-  sessionRequestId String?       @unique          // null for instructor-created group sessions
+  sessionRequestId String?       @unique // null for instructor-created group sessions
   instructorId     String
-  studentId        String?                        // null for group sessions
-  courseId         String?                        // optional link to a course
+  studentId        String? // null for group sessions
+  courseId         String? // optional link to a course
   title            String
   description      String?
   scheduledAt      DateTime
   startedAt        DateTime?
   endedAt          DateTime?
   duration         Int
-  maxStudents      Int           @default(30)     // max accepted applicants
-  isPublic         Boolean       @default(true)   // visible to students for browsing
-  hourlyRate       Decimal       @db.Decimal(10, 2) @default(0)
-  totalAmount      Decimal       @db.Decimal(10, 2) @default(0)
+  maxStudents      Int           @default(30) // max accepted applicants
+  isPublic         Boolean       @default(true) // visible to students for browsing
+  hourlyRate       Decimal       @default(0) @db.Decimal(10, 2)
+  totalAmount      Decimal       @default(0) @db.Decimal(10, 2)
   currency         String        @default("USD")
   status           SessionStatus @default(SCHEDULED)
   roomId           String?
@@ -503,14 +507,14 @@ model LiveSession {
   createdAt        DateTime      @default(now())
   updatedAt        DateTime      @updatedAt
 
-  sessionRequest SessionRequest? @relation("SessionFromRequest", fields: [sessionRequestId], references: [id])
-  instructor     User            @relation("SessionInstructor", fields: [instructorId], references: [id])
-  student        User?           @relation("SessionStudent", fields: [studentId], references: [id])
-  course         Course?         @relation("CourseLiveSessions", fields: [courseId], references: [id])
+  sessionRequest SessionRequest?  @relation("SessionFromRequest", fields: [sessionRequestId], references: [id])
+  instructor     User             @relation("SessionInstructor", fields: [instructorId], references: [id])
+  student        User?            @relation("SessionStudent", fields: [studentId], references: [id])
+  course         Course?          @relation("CourseLiveSessions", fields: [courseId], references: [id])
   applications   SessionRequest[] @relation("SessionApplications")
 
   @@index([instructorId, status])
-  @@index([scheduledAt])
+  @@index([scheduledAt, status])
   @@index([courseId])
   @@map("live_sessions")
 }
@@ -536,6 +540,7 @@ model Payment {
 
   @@index([userId])
   @@index([status])
+  @@index([createdAt])
   @@map("payments")
 }
 
@@ -560,16 +565,16 @@ model Payout {
 // ─── Reviews ──────────────────────────────────────────────────────────────────
 
 model Review {
-  id                String   @id @default(cuid())
-  userId            String
-  courseId          String
-  rating            Int
-  title             String?
-  content           String?
-  isVerifiedPurchase Boolean @default(false)
-  isHelpful         Int      @default(0)
-  createdAt         DateTime @default(now())
-  updatedAt         DateTime @updatedAt
+  id                 String   @id @default(cuid())
+  userId             String
+  courseId           String
+  rating             Int
+  title              String?
+  content            String?
+  isVerifiedPurchase Boolean  @default(false)
+  isHelpful          Int      @default(0)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
 
   user   User   @relation(fields: [userId], references: [id])
   course Course @relation(fields: [courseId], references: [id], onDelete: Cascade)
@@ -584,8 +589,8 @@ model Review {
 model Chat {
   id          String   @id @default(cuid())
   name        String?
-  type        String   @default("direct")  // "direct" | "course"
-  relatedId   String?                       // courseId when type = "course"
+  type        String   @default("direct") // "direct" | "course"
+  relatedId   String? // courseId when type = "course"
   isGroupChat Boolean  @default(false)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
@@ -624,9 +629,9 @@ model ChatMessage {
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
-  chat    Chat         @relation(fields: [chatId], references: [id], onDelete: Cascade)
-  sender  User         @relation("ChatMessageSender", fields: [senderId], references: [id], onDelete: Cascade)
-  replyTo ChatMessage? @relation("MessageReply", fields: [replyToId], references: [id])
+  chat    Chat          @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  sender  User          @relation("ChatMessageSender", fields: [senderId], references: [id], onDelete: Cascade)
+  replyTo ChatMessage?  @relation("MessageReply", fields: [replyToId], references: [id])
   replies ChatMessage[] @relation("MessageReply")
 
   @@index([chatId, createdAt])
@@ -684,28 +689,29 @@ model Certificate {
   user       User       @relation(fields: [userId], references: [id])
 
   @@index([userId])
+  @@index([courseId])
   @@map("certificates")
 }
 
 // ─── Coupons ──────────────────────────────────────────────────────────────────
 
 model Coupon {
-  id                String    @id @default(cuid())
-  code              String    @unique
+  id                String   @id @default(cuid())
+  code              String   @unique
   name              String
   description       String?
   discountType      String
-  discountValue     Decimal   @db.Decimal(10, 2)
-  minimumAmount     Decimal?  @db.Decimal(10, 2)
-  maximumDiscount   Decimal?  @db.Decimal(10, 2)
+  discountValue     Decimal  @db.Decimal(10, 2)
+  minimumAmount     Decimal? @db.Decimal(10, 2)
+  maximumDiscount   Decimal? @db.Decimal(10, 2)
   usageLimit        Int?
-  usedCount         Int       @default(0)
-  isActive          Boolean   @default(true)
+  usedCount         Int      @default(0)
+  isActive          Boolean  @default(true)
   validFrom         DateTime
   validUntil        DateTime
   applicableCourses String[]
-  createdAt         DateTime  @default(now())
-  updatedAt         DateTime  @updatedAt
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
 
   courses Course[]
 
@@ -840,16 +846,17 @@ model QuizAttempt {
   answers QuizAnswer[]
 
   @@index([quizId, userId])
+  @@index([userId])
   @@map("quiz_attempts")
 }
 
 model QuizAnswer {
-  id         String @id @default(cuid())
-  attemptId  String
-  questionId String
-  answer     String
-  isCorrect  Boolean @default(false)
-  pointsEarned Int   @default(0)
+  id           String  @id @default(cuid())
+  attemptId    String
+  questionId   String
+  answer       String
+  isCorrect    Boolean @default(false)
+  pointsEarned Int     @default(0)
 
   attempt  QuizAttempt  @relation(fields: [attemptId], references: [id], onDelete: Cascade)
   question QuizQuestion @relation(fields: [questionId], references: [id], onDelete: Cascade)

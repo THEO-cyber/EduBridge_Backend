@@ -23,19 +23,35 @@ export class EmailService {
     });
   }
 
-  // ─── Core send ────────────────────────────────────────────────────────────
+  // ─── Core send (non-blocking, retries up to 3×) ───────────────────────────
 
   private async send(to: string, subject: string, html: string): Promise<void> {
     if (!this.configService.get<string>('email.user')) {
-      this.logger.warn(`Email not sent (no credentials) → ${to}: ${subject}`);
+      this.logger.warn(`Email skipped (no credentials) → ${to}: ${subject}`);
       return;
     }
-    try {
-      await this.transporter.sendMail({ from: this.from, to, subject, html });
-      this.logger.log(`Email sent → ${to}: ${subject}`);
-    } catch (error: any) {
-      this.logger.error(`Email failed → ${to}: ${error.message}`);
+
+    const MAX_ATTEMPTS = 3;
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      try {
+        await this.transporter.sendMail({ from: this.from, to, subject, html });
+        this.logger.log(`Email sent → ${to}: ${subject}`);
+        return;
+      } catch (error: any) {
+        if (attempt < MAX_ATTEMPTS) {
+          const delay = 1000 * 2 ** (attempt - 1); // 1s, 2s
+          this.logger.warn(`Email attempt ${attempt} failed (retry in ${delay}ms) → ${to}: ${error.message}`);
+          await new Promise((r) => setTimeout(r, delay));
+        } else {
+          this.logger.error(`Email permanently failed after ${MAX_ATTEMPTS} attempts → ${to}: ${error.message}`);
+        }
+      }
     }
+  }
+
+  // Dispatch email without blocking the caller's request cycle
+  dispatch(to: string, subject: string, html: string): void {
+    void this.send(to, subject, html);
   }
 
   // ─── Verification & Password ───────────────────────────────────────────────

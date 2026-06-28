@@ -5,14 +5,23 @@ import {
   BadRequestException,
 } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { CacheService } from '../../common/cache/cache.service';
 import { CreateCourseDto } from './dto/create-course.dto';
 import { UpdateCourseDto } from './dto/update-course.dto';
 import { PaginationDto } from '../../common/dto/pagination.dto';
 import { CourseStatus, CourseLevel, Role, EnrollmentStatus, NotificationType } from '@prisma/client';
 
+// Cache TTLs
+const TTL_COURSE      = 300;  // 5 min — single course detail
+const TTL_COURSE_LIST = 120;  // 2 min — paginated lists (changes more often)
+const TTL_CATEGORIES  = 3600; // 1 hr  — categories rarely change
+
 @Injectable()
 export class CoursesService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private cache: CacheService,
+  ) {}
 
   async create(instructorId: string, createCourseDto: CreateCourseDto) {
     // Validate category exists
@@ -85,6 +94,11 @@ export class CoursesService {
   ) {
     const { page, limit, skip } = paginationDto;
 
+    // Cache key encodes all filter params so different queries don't collide
+    const cacheKey = `courses:list:${page}:${limit}:${JSON.stringify(filters ?? {})}`;
+    const cached = await this.cache.get<any>(cacheKey);
+    if (cached) return cached;
+
     const where: any = {
       isPublished: true,
       status: CourseStatus.PUBLISHED,
@@ -146,7 +160,7 @@ export class CoursesService {
       this.prisma.course.count({ where }),
     ]);
 
-    return {
+    const result = {
       courses,
       pagination: {
         page,
@@ -155,75 +169,93 @@ export class CoursesService {
         pages: Math.ceil(total / (limit || 20)),
       },
     };
+
+    // Don't cache filtered/search results as long as unfiltered pages
+    const ttl = filters?.search ? 30 : TTL_COURSE_LIST;
+    await this.cache.set(cacheKey, result, ttl);
+    return result;
   }
 
   async findOne(id: string, userId?: string) {
-    const course = await this.prisma.course.findUnique({
-      where: { id },
-      include: {
-        instructor: {
-          select: {
-            id: true,
-            username: true,
-            firstName: true,
-            lastName: true,
-            avatar: true,
-            bio: true,
-            instructorProfile: {
-              select: {
-                title: true,
-                expertise: true,
-                experience: true,
-                rating: true,
-                totalReviews: true,
-                totalStudents: true,
-                isVerified: true,
+    // Cache the base course data (without user-specific isEnrolled)
+    const cacheKey = CacheService.keys.course(id);
+    const cachedCourse = await this.cache.get<any>(cacheKey);
+
+    let course = cachedCourse;
+    if (!course) {
+      course = await this.prisma.course.findUnique({
+        where: { id },
+        include: {
+          instructor: {
+            select: {
+              id: true,
+              username: true,
+              firstName: true,
+              lastName: true,
+              avatar: true,
+              bio: true,
+              instructorProfile: {
+                select: {
+                  title: true,
+                  expertise: true,
+                  experience: true,
+                  rating: true,
+                  totalReviews: true,
+                  totalStudents: true,
+                  isVerified: true,
+                },
               },
             },
           },
-        },
-        category: true,
-        sections: {
-          where: { isPublished: true },
-          include: {
-            lessons: {
-              where: { isPublished: true },
-              select: {
-                id: true,
-                title: true,
-                description: true,
-                sortOrder: true,
-                videoDuration: true,
-                isPreview: true,
-              },
-              orderBy: { sortOrder: 'asc' },
-            },
-          },
-          orderBy: { sortOrder: 'asc' },
-        },
-        reviews: {
-          take: 10,
-          include: {
-            user: {
-              select: {
-                id: true,
-                username: true,
-                firstName: true,
-                lastName: true,
-                avatar: true,
+          category: true,
+          sections: {
+            where: { isPublished: true },
+            include: {
+              lessons: {
+                where: { isPublished: true },
+                select: {
+                  id: true,
+                  title: true,
+                  description: true,
+                  sortOrder: true,
+                  videoDuration: true,
+                  isPreview: true,
+                },
+                orderBy: { sortOrder: 'asc' },
               },
             },
+            orderBy: { sortOrder: 'asc' },
           },
-          orderBy: { createdAt: 'desc' },
-        },
-        _count: {
-          select: {
-            enrollments: true,
-            reviews: true,
+          reviews: {
+            take: 10,
+            include: {
+              user: {
+                select: {
+                  id: true,
+                  username: true,
+                  firstName: true,
+                  lastName: true,
+                  avatar: true,
+                },
+              },
+            },
+            orderBy: { createdAt: 'desc' },
+          },
+          _count: {
+            select: {
+              enrollments: true,
+              reviews: true,
+            },
           },
         },
-      },
-    });
+      });
+
+      if (!course) throw new NotFoundException('Course not found');
+      // Cache only published courses — draft courses are instructor-specific
+      if (course.isPublished) {
+        await this.cache.set(cacheKey, course, TTL_COURSE);
+      }
+    }
 
     if (!course) {
       throw new NotFoundException('Course not found');
@@ -337,6 +369,12 @@ export class CoursesService {
       },
     });
 
+    // Invalidate cached course detail and all list pages
+    await Promise.all([
+      this.cache.del(CacheService.keys.course(id)),
+      this.cache.delPattern('courses:list:*'),
+    ]);
+
     return course;
   }
 
@@ -367,6 +405,11 @@ export class CoursesService {
     await this.prisma.course.delete({
       where: { id },
     });
+
+    await Promise.all([
+      this.cache.del(CacheService.keys.course(id)),
+      this.cache.delPattern('courses:list:*'),
+    ]);
 
     return { message: 'Course successfully deleted' };
   }
@@ -415,6 +458,12 @@ export class CoursesService {
         instructor: { select: { firstName: true, lastName: true } },
       },
     });
+
+    // Invalidate this course's cache (status changed to UNDER_REVIEW)
+    await Promise.all([
+      this.cache.del(CacheService.keys.course(id)),
+      this.cache.delPattern('courses:list:*'),
+    ]);
 
     // Notify all active superadmins
     const superAdmins = await this.prisma.user.findMany({
