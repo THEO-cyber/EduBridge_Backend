@@ -222,7 +222,7 @@ export class AuthService {
 
     const code = Math.floor(100000 + Math.random() * 900000).toString(); // 6-digit OTP
     const codeHash = sha256(code);
-    const expires = new Date(now + 30 * 1000); // 30 seconds
+    const expires = new Date(now + 2 * 60 * 1000); // 2 minutes
 
     await this.prisma.userAuth.update({
       where: { userId: user.id },
