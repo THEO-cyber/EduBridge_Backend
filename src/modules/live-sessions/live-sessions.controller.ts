@@ -18,7 +18,7 @@ import {
   ApiQuery,
 } from '@nestjs/swagger';
 import { LiveSessionsService } from './live-sessions.service';
-import { CreateLiveSessionDto, UpdateLiveSessionDto, NotifySessionDto } from './dto/live-session.dto';
+import { CreateLiveSessionDto, UpdateLiveSessionDto, NotifySessionDto, GetUserSessionsDto } from './dto/live-session.dto';
 import { AvailabilityService } from './availability.service';
 import { CreateSessionRequestDto } from './dto/session-request.dto';
 import { CreateAvailabilitySlotDto, UpdateAvailabilitySlotDto } from './dto/availability.dto';
@@ -221,13 +221,11 @@ export class LiveSessionsController {
 
   @Get('my-sessions')
   @ApiOperation({ summary: 'Get sessions for the current user' })
-  @ApiQuery({ name: 'role', required: false, enum: ['instructor', 'student'] })
   async getUserSessions(
     @CurrentUser() user: User,
-    @Query() pagination: PaginationDto,
-    @Query('role') role?: 'instructor' | 'student',
+    @Query() query: GetUserSessionsDto,
   ) {
-    return this.liveSessionsService.getUserSessions(user.id, pagination, role);
+    return this.liveSessionsService.getUserSessions(user.id, query, query.role);
   }
 
   // ── Legacy: 1-on-1 Student-initiated Requests ──────────────────────────────

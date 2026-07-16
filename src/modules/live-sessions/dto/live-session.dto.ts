@@ -1,6 +1,17 @@
-import { IsString, IsOptional, IsInt, IsBoolean, Min, Max, IsDateString } from 'class-validator';
+import { IsString, IsOptional, IsInt, IsBoolean, Min, Max, IsDateString, IsIn } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
+import { PaginationDto } from '../../../common/dto/pagination.dto';
+
+// my-sessions query: pagination + an optional role filter.
+// Extending PaginationDto keeps `role` whitelisted so the global
+// ValidationPipe (forbidNonWhitelisted) doesn't reject it.
+export class GetUserSessionsDto extends PaginationDto {
+  @ApiPropertyOptional({ enum: ['instructor', 'student'] })
+  @IsOptional()
+  @IsIn(['instructor', 'student'])
+  role?: 'instructor' | 'student';
+}
 
 export class CreateLiveSessionDto {
   @ApiProperty({ example: 'Advanced React Hooks — Live Class' })
