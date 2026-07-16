@@ -273,6 +273,21 @@ export class VideoProcessingService {
       throw new BadRequestException('Video is not in UPLOADED state');
     }
 
+    // Direct-play mode (VIDEO_DIRECT_PLAY=true): skip ffmpeg transcoding and
+    // serve the original upload as-is. Ideal for low-resource hosts (e.g. free
+    // tiers) since transcoding is CPU/RAM heavy. Flutter's player streams MP4.
+    if (process.env.VIDEO_DIRECT_PLAY === 'true') {
+      await this.prisma.video.update({
+        where: { id: videoId },
+        data: {
+          status: VideoStatus.READY,
+          processedUrl: video.originalUrl,
+          processingCompletedAt: new Date(),
+        },
+      });
+      return { videoId, status: VideoStatus.READY, message: 'Upload confirmed — ready to stream' };
+    }
+
     if (process.env.REDIS_AVAILABLE === 'true') {
       try {
         await this.videoQueue.add(
@@ -470,9 +485,11 @@ export class VideoProcessingService {
         where: { videoId },
         orderBy: { createdAt: 'desc' },
       });
-      if (!fallback) throw new NotFoundException('No processed variants found');
-      targetS3Key = fallback.s3Key;
+      // Fall back to the original upload when there are no transcoded variants
+      // (direct-play mode) so the video still streams.
+      targetS3Key = fallback?.s3Key ?? video.s3Key;
     }
+    if (!targetS3Key) throw new NotFoundException('No video file found');
 
     const format = targetS3Key.endsWith('.m3u8') ? 'hls' : 'mp4';
 
