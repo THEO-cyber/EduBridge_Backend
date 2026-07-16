@@ -12,6 +12,7 @@ import {
 import { ApiProperty } from '@nestjs/swagger';
 import { Role, CourseStatus } from '@prisma/client';
 import { Transform } from 'class-transformer';
+import { PaginationDto } from '../../../common/dto/pagination.dto';
 
 export class CreateUserDto {
   @ApiProperty({ example: 'johndoe' })
@@ -84,7 +85,9 @@ export class UpdateUserDto {
   isActive?: boolean;
 }
 
-export class UserFiltersDto {
+// Extends PaginationDto so page/limit + filters travel in ONE @Query() DTO.
+// (Two @Query() DTOs + forbidNonWhitelisted -> each rejects the other's fields -> 400.)
+export class UserFiltersDto extends PaginationDto {
   @ApiProperty({ enum: Role, required: false })
   @IsOptional()
   @IsEnum(Role)
@@ -112,7 +115,7 @@ export class UserFiltersDto {
   createdBefore?: string;
 }
 
-export class CourseFiltersDto {
+export class CourseFiltersDto extends PaginationDto {
   @ApiProperty({ enum: CourseStatus, required: false })
   @IsOptional()
   @IsEnum(CourseStatus)

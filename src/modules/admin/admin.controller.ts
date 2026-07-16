@@ -114,10 +114,7 @@ export class AdminController {
   // User Management
   @Get('users')
   @ApiOperation({ summary: 'Get all users with filters and pagination' })
-  async getUsers(
-    @Query() paginationDto: PaginationDto,
-    @Query() filters: UserFiltersDto,
-  ) {
+  async getUsers(@Query() filters: UserFiltersDto) {
     const parsedFilters: {
       role?: any;
       isActive?: boolean;
@@ -140,7 +137,7 @@ export class AdminController {
         : undefined,
     };
 
-    return this.adminService.getUsers(paginationDto, parsedFilters);
+    return this.adminService.getUsers(filters, parsedFilters);
   }
 
   @Get('users/:id')
@@ -179,10 +176,7 @@ export class AdminController {
   // Course Management
   @Get('courses')
   @ApiOperation({ summary: 'Get all courses with filters and pagination' })
-  async getCourses(
-    @Query() paginationDto: PaginationDto,
-    @Query() filters: CourseFiltersDto,
-  ) {
+  async getCourses(@Query() filters: CourseFiltersDto) {
     const parsedFilters: {
       status?: any;
       instructorId?: string;
@@ -207,7 +201,7 @@ export class AdminController {
         : undefined,
     };
 
-    return this.adminService.getCourses(paginationDto, parsedFilters);
+    return this.adminService.getCourses(filters, parsedFilters);
   }
 
   @Get('courses/pending')
