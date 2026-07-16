@@ -100,6 +100,17 @@ export class VideoProcessingService {
       credentials,
       ...(s3PublicUrl ? { endpoint: s3PublicUrl, forcePathStyle: true } : {}),
     });
+
+    // Guard against the classic R2 misconfiguration: a non-AWS region (e.g.
+    // "auto") with no S3_ENDPOINT makes the SDK build the invalid host
+    // <bucket>.s3.<region>.amazonaws.com → getaddrinfo ENOTFOUND on every op.
+    if (!s3Endpoint && !/^(us|eu|ap|sa|ca|af|me)-/.test(this.region)) {
+      this.logger.error(
+        `Storage misconfigured: AWS_REGION="${this.region}" but S3_ENDPOINT is not set. ` +
+          `For Cloudflare R2 set S3_ENDPOINT=https://<account_id>.r2.cloudflarestorage.com ` +
+          `(with AWS_REGION=auto). Uploads/streaming will fail until this is fixed.`,
+      );
+    }
   }
 
   async uploadVideo(uploadData: VideoUploadData) {
@@ -1003,6 +1014,17 @@ export class VideoProcessingService {
   private buildUrl(s3Key: string): string {
     if (this.cloudFrontDomain) {
       return `https://${this.cloudFrontDomain}/${s3Key}`;
+    }
+    // Prefer an explicit public base (R2 public domain / CDN) or the S3-compatible
+    // endpoint (Cloudflare R2, MinIO). Only fall back to the AWS virtual-host
+    // pattern when nothing is configured — otherwise region "auto" (R2) would
+    // produce the invalid host <bucket>.s3.auto.amazonaws.com.
+    const publicBase =
+      this.configService.get<string>('S3_PUBLIC_URL') ||
+      this.configService.get<string>('MINIO_PUBLIC_URL') ||
+      this.configService.get<string>('S3_ENDPOINT');
+    if (publicBase) {
+      return `${publicBase.replace(/\/+$/, '')}/${this.bucket}/${s3Key}`;
     }
     return `https://${this.bucket}.s3.${this.region}.amazonaws.com/${s3Key}`;
   }

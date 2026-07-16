@@ -14,6 +14,7 @@ export class CertificatesService {
   private readonly bucket: string;
   private readonly region: string;
   private readonly cloudFrontDomain?: string;
+  private readonly endpoint?: string;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -22,6 +23,9 @@ export class CertificatesService {
     this.region = this.configService.get<string>('AWS_REGION') ?? 'us-east-1';
     this.bucket = this.configService.get<string>('AWS_S3_BUCKET') ?? '';
     this.cloudFrontDomain = this.configService.get<string>('AWS_CLOUDFRONT_DOMAIN');
+    // S3-compatible endpoint (Cloudflare R2 / MinIO). Without this, region "auto"
+    // (R2) resolves to the invalid host <bucket>.s3.auto.amazonaws.com.
+    this.endpoint = this.configService.get<string>('S3_ENDPOINT');
 
     this.s3 = new S3Client({
       region: this.region,
@@ -29,6 +33,7 @@ export class CertificatesService {
         accessKeyId:     this.configService.get<string>('AWS_ACCESS_KEY_ID') ?? '',
         secretAccessKey: this.configService.get<string>('AWS_SECRET_ACCESS_KEY') ?? '',
       },
+      ...(this.endpoint ? { endpoint: this.endpoint, forcePathStyle: true } : {}),
     });
   }
 
@@ -171,9 +176,13 @@ export class CertificatesService {
       }),
     );
 
+    const publicBase =
+      this.configService.get<string>('S3_PUBLIC_URL') || this.endpoint;
     const pdfUrl = this.cloudFrontDomain
       ? `https://${this.cloudFrontDomain}/${s3Key}`
-      : `https://${this.bucket}.s3.${this.region}.amazonaws.com/${s3Key}`;
+      : publicBase
+        ? `${publicBase.replace(/\/+$/, '')}/${this.bucket}/${s3Key}`
+        : `https://${this.bucket}.s3.${this.region}.amazonaws.com/${s3Key}`;
 
     await this.prisma.certificate.update({ where: { id: certificateId }, data: { pdfUrl } });
 
