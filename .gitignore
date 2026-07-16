@@ -138,3 +138,8 @@ prisma/dev.db-journal
 # Firebase service account (NEVER commit — contains private key)
 firebase-service-account.json
 *-firebase-adminsdk-*.json
+# Local Claude Code settings — never publish
+.claude/
+
+# Markdown docs are kept local, not published
+*.md
