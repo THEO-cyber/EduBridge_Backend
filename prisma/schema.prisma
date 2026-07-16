@@ -182,6 +182,7 @@ model InstructorProfile {
   isVerified             Boolean  @default(false)
   verificationDocuments  String[]
   payoutAccountId        String?
+  payoutPhone            String? // MoMo/Orange Money number for Nkwa disbursements
   rating                 Decimal  @default(0) @db.Decimal(3, 2)
   totalReviews           Int      @default(0)
   totalStudents          Int      @default(0)
@@ -246,7 +247,7 @@ model Course {
   categoryId       String
   price            Decimal      @db.Decimal(10, 2)
   discountPrice    Decimal?     @db.Decimal(10, 2)
-  currency         String       @default("USD")
+  currency         String       @default("XAF")
   level            CourseLevel  @default(BEGINNER)
   duration         Int?
   language         String       @default("en")
@@ -397,7 +398,7 @@ model Enrollment {
   userId             String
   courseId           String
   price              Decimal          @db.Decimal(10, 2)
-  currency           String           @default("USD")
+  currency           String           @default("XAF")
   status             EnrollmentStatus @default(ACTIVE)
   progressPercentage Decimal          @default(0) @db.Decimal(5, 2)
   completedAt        DateTime?
@@ -468,7 +469,7 @@ model SessionRequest {
   duration      Int           @default(60)
   hourlyRate    Decimal       @default(0) @db.Decimal(10, 2)
   totalAmount   Decimal       @default(0) @db.Decimal(10, 2)
-  currency      String        @default("USD")
+  currency      String        @default("XAF")
   status        SessionStatus @default(SCHEDULED)
   message       String?
   createdAt     DateTime      @default(now())
@@ -501,7 +502,7 @@ model LiveSession {
   isPublic         Boolean       @default(true) // visible to students for browsing
   hourlyRate       Decimal       @default(0) @db.Decimal(10, 2)
   totalAmount      Decimal       @default(0) @db.Decimal(10, 2)
-  currency         String        @default("USD")
+  currency         String        @default("XAF")
   status           SessionStatus @default(SCHEDULED)
   roomId           String?
   recordingUrl     String?
@@ -527,12 +528,14 @@ model Payment {
   id                    String          @id @default(cuid())
   userId                String
   amount                Decimal         @db.Decimal(10, 2)
-  currency              String          @default("USD")
+  currency              String          @default("XAF")
   status                PaymentStatus   @default(PENDING)
   type                  TransactionType
   description           String?
   stripePaymentIntentId String?         @unique
   stripeCustomerId      String?
+  nkwaPaymentId         String?         @unique // Nkwa Pay collection id (MoMo/Orange)
+  phoneNumber           String? // payer MoMo/Orange number
   refundId              String?
   metadata              Json?
   createdAt             DateTime        @default(now())
@@ -550,7 +553,7 @@ model Payout {
   id             String    @id @default(cuid())
   instructorId   String
   amount         Decimal   @db.Decimal(10, 2)
-  currency       String    @default("USD")
+  currency       String    @default("XAF")
   status         String    @default("pending")
   stripePayoutId String?   @unique
   description    String?

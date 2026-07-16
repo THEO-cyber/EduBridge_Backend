@@ -27,6 +27,13 @@ export class ReviewsController {
     return this.reviewsService.getCourseReviews(courseId, pagination);
   }
 
+  @Get('my')
+  @ApiBearerAuth('JWT-auth')
+  @ApiOperation({ summary: 'Get all your reviews' })
+  getMyReviews(@CurrentUser() user: User, @Query() pagination: PaginationDto) {
+    return this.reviewsService.getMyReviews(user.id, pagination);
+  }
+
   @Get('my/:courseId')
   @ApiBearerAuth('JWT-auth')
   @ApiOperation({ summary: 'Get your own review for a course' })

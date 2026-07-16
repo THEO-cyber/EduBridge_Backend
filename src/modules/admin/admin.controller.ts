@@ -437,6 +437,13 @@ export class AdminController {
 
   // ── Instructor moderation (Super Admin only) ──────────────────────────────
 
+  @Get('instructors')
+  @Roles(Role.SUPER_ADMIN, Role.ADMIN)
+  @ApiOperation({ summary: 'List instructors (admin)' })
+  async listInstructors(@Query() paginationDto: PaginationDto) {
+    return this.adminService.listInstructors(paginationDto);
+  }
+
   @Post('instructors/:id/suspend')
   @Roles(Role.SUPER_ADMIN)
   @ApiOperation({ summary: 'Suspend an instructor account (Super Admin only)' })

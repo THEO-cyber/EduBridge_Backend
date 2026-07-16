@@ -132,6 +132,26 @@ export class ReviewsService {
     });
   }
 
+  async getMyReviews(userId: string, pagination: PaginationDto) {
+    const { page = 1, limit = 20, skip = 0 } = pagination;
+    const [reviews, total] = await Promise.all([
+      this.prisma.review.findMany({
+        where: { userId },
+        skip,
+        take: limit,
+        orderBy: { createdAt: 'desc' },
+        include: {
+          course: { select: { id: true, title: true, slug: true, thumbnail: true } },
+        },
+      }),
+      this.prisma.review.count({ where: { userId } }),
+    ]);
+    return {
+      reviews,
+      pagination: { page, limit, total, pages: Math.ceil(total / (limit || 20)) },
+    };
+  }
+
   private async updateCourseRating(courseId: string) {
     const result = await this.prisma.review.aggregate({
       where: { courseId },

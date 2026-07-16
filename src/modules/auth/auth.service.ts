@@ -53,6 +53,11 @@ export class AuthService {
     const rawToken = crypto.randomBytes(32).toString('hex');
     const tokenHash = sha256(rawToken);
 
+    // Vetted onboarding: public self-registration ALWAYS creates a STUDENT.
+    // Becoming an INSTRUCTOR is possible only by submitting an instructor
+    // application that an admin approves (see ApplicationsService.review, which
+    // promotes the user to INSTRUCTOR and creates the instructor profile).
+    // This also closes any ADMIN/SUPER_ADMIN self-registration path.
     const user = await this.prisma.user.create({
       data: {
         email: dto.email,
@@ -60,7 +65,7 @@ export class AuthService {
         firstName: dto.firstName,
         lastName: dto.lastName,
         bio: dto.bio,
-        role: dto.role ?? Role.STUDENT,
+        role: Role.STUDENT,
         userAuth: {
           create: {
             passwordHash: hashedPassword,
@@ -68,9 +73,7 @@ export class AuthService {
             emailVerificationTokenHash: tokenHash,
           } as any,
         },
-        ...(dto.role === Role.INSTRUCTOR
-          ? { instructorProfile: { create: {} } }
-          : { studentProfile: { create: {} } }),
+        studentProfile: { create: {} },
       },
       include: { instructorProfile: true, studentProfile: true },
     });

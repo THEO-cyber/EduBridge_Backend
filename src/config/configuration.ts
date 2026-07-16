@@ -16,10 +16,13 @@ export const configuration = () => ({
     password: process.env.REDIS_PASSWORD || '',
   },
 
+  // No fallback secrets here on purpose — JOI_VALIDATION_SCHEMA in app.module.ts
+  // fails the app at boot if JWT_SECRET/JWT_REFRESH_SECRET are missing, so a
+  // misconfigured deployment can never silently sign tokens with a guessable value.
   jwt: {
-    secret: process.env.JWT_SECRET || 'fallback-secret-change-this',
+    secret: process.env.JWT_SECRET,
     expiresIn: process.env.JWT_EXPIRES_IN || '7d',
-    refreshSecret: process.env.JWT_REFRESH_SECRET || 'fallback-refresh-secret',
+    refreshSecret: process.env.JWT_REFRESH_SECRET,
     refreshExpiresIn: process.env.JWT_REFRESH_EXPIRES_IN || '30d',
   },
 
@@ -35,6 +38,19 @@ export const configuration = () => ({
     publishableKey: process.env.STRIPE_PUBLISHABLE_KEY,
     webhookSecret: process.env.STRIPE_WEBHOOK_SECRET,
   },
+
+  // Nkwa Pay (MoMo + Orange Money) — the active payment provider.
+  nkwa: {
+    baseUrl: process.env.NKWA_BASE_URL || 'https://api.pay.mynkwa.com',
+    apiKey: process.env.NKWA_API_KEY,
+    // RSA public key (PEM) from the Nkwa dashboard, used to verify webhook X-Signature.
+    webhookPublicKey: process.env.NKWA_WEBHOOK_PUBLIC_KEY?.replace(/\\n/g, '\n'),
+  },
+
+  // Platform currency. XAF is zero-decimal (integer amounts, no cents).
+  currency: process.env.PLATFORM_CURRENCY || 'XAF',
+  // Instructor share of a course sale (platform keeps the remainder).
+  instructorShare: parseFloat(process.env.INSTRUCTOR_SHARE || '0.7'),
 
   google: {
     clientId: process.env.GOOGLE_CLIENT_ID,

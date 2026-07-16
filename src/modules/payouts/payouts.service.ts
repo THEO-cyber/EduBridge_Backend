@@ -3,39 +3,38 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { ConfigService } from '@nestjs/config';
+import { NkwaService } from '../../common/nkwa/nkwa.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { EmailService } from '../../common/email/email.service';
 import { PaginationDto } from '../../common/dto/pagination.dto';
-import { IsNumber, IsOptional, IsString, Min } from 'class-validator';
+import { IsNumber, IsOptional, IsString, Min, Matches } from 'class-validator';
 import { Type } from 'class-transformer';
-import { NotificationType } from '@prisma/client';
-import Stripe from 'stripe';
 
 export class RequestPayoutDto {
-  @IsNumber() @Type(() => Number) @Min(10) amount!: number;
+  @IsNumber() @Type(() => Number) @Min(500) amount!: number;
   @IsOptional() @IsString() currency?: string;
 }
 
-export class CreateConnectAccountDto {
-  @IsString() country!: string;
-  @IsString() email!: string;
+export class ConnectPayoutDto {
+  @IsString()
+  @Matches(/^(\+?237)?[0-9]{9}$/, { message: 'phoneNumber must be a valid Cameroon MoMo/Orange number' })
+  phoneNumber!: string;
 }
 
 @Injectable()
 export class PayoutsService {
   private readonly logger = new Logger(PayoutsService.name);
-  private readonly stripe: Stripe;
 
   constructor(
     private readonly prisma: PrismaService,
     private readonly configService: ConfigService,
+    private readonly nkwa: NkwaService,
     private readonly notificationsService: NotificationsService,
     private readonly emailService: EmailService,
-  ) {
-    this.stripe = new Stripe(
-      this.configService.get<string>('stripe.secretKey') ?? '',
-      { apiVersion: '2023-10-16' },
-    );
+  ) {}
+
+  private get currency(): string {
+    return this.configService.get<string>('currency') || 'XAF';
   }
 
   // ── Instructor: get earnings dashboard ────────────────────────────────────
@@ -86,47 +85,27 @@ export class PayoutsService {
       availableBalance: available,
       pendingPayouts:   inProgress,
       paidOut:          alreadyPaid,
-      stripeConnected:  !!profile.payoutAccountId,
+      currency:         this.currency,
+      payoutConnected:  !!profile.payoutPhone,
+      payoutPhone:      profile.payoutPhone,
       recentPayouts,
     };
   }
 
-  // ── Instructor: create Stripe Connect onboarding link ────────────────────
+  // ── Instructor: save MoMo/Orange payout number ────────────────────────────
 
-  async createConnectOnboardingLink(instructorId: string) {
+  async savePayoutPhone(instructorId: string, dto: ConnectPayoutDto) {
     const profile = await this.prisma.instructorProfile.findUnique({
       where: { userId: instructorId },
-      include: { user: { select: { email: true, firstName: true, lastName: true } } },
     });
     if (!profile) throw new NotFoundException('Instructor profile not found');
 
-    let accountId = profile.payoutAccountId;
-
-    if (!accountId) {
-      // Create a new Express account (simplest Connect type)
-      const account = await this.stripe.accounts.create({
-        type: 'express',
-        email: (profile.user as any).email,
-        capabilities: { transfers: { requested: true } },
-        metadata: { instructorId, userId: instructorId },
-      });
-      accountId = account.id;
-
-      await this.prisma.instructorProfile.update({
-        where: { userId: instructorId },
-        data: { payoutAccountId: accountId },
-      });
-    }
-
-    const frontendUrl = this.configService.get<string>('frontendUrl') ?? 'http://localhost:3000';
-    const link = await this.stripe.accountLinks.create({
-      account:     accountId,
-      refresh_url: `${frontendUrl}/instructor/payouts/connect/refresh`,
-      return_url:  `${frontendUrl}/instructor/payouts/connect/success`,
-      type:        'account_onboarding',
+    await this.prisma.instructorProfile.update({
+      where: { userId: instructorId },
+      data: { payoutPhone: dto.phoneNumber },
     });
 
-    return { onboardingUrl: link.url };
+    return { connected: true, payoutPhone: dto.phoneNumber };
   }
 
   // ── Instructor: request a payout ──────────────────────────────────────────
@@ -137,12 +116,12 @@ export class PayoutsService {
       include: { user: { select: { email: true, firstName: true, lastName: true } } },
     });
     if (!profile) throw new NotFoundException('Instructor profile not found');
-    if (!profile.payoutAccountId) {
-      throw new BadRequestException('Please connect your Stripe account before requesting a payout');
+    if (!profile.payoutPhone) {
+      throw new BadRequestException('Please add your MoMo/Orange Money payout number before requesting a payout');
     }
 
-    const currency = (dto.currency ?? 'usd').toLowerCase();
-    const amountCents = Math.round(dto.amount * 100);
+    const currency = this.currency;
+    const amount = Math.round(dto.amount); // XAF is zero-decimal
 
     // Validate available balance
     const alreadyPaid = await this.prisma.payout.aggregate({
@@ -151,35 +130,34 @@ export class PayoutsService {
     });
     const available = Number(profile.totalRevenue) - Number(alreadyPaid._sum.amount ?? 0);
 
-    if (dto.amount > available) {
+    if (amount > available) {
       throw new BadRequestException(
-        `Insufficient balance. Available: $${available.toFixed(2)}`,
+        `Insufficient balance. Available: ${currency} ${Math.floor(available)}`,
       );
     }
 
-    // Transfer from platform account to connected account
-    let stripePayoutId: string | undefined;
+    // Disburse to the instructor's MoMo/Orange number via Nkwa.
+    let nkwaPayoutId: string | undefined;
     try {
-      const transfer = await this.stripe.transfers.create({
-        amount:      amountCents,
-        currency,
-        destination: profile.payoutAccountId,
-        metadata:    { instructorId, profileId: profile.id },
-      });
-      stripePayoutId = transfer.id;
+      const disbursement = await this.nkwa.disburse(
+        amount,
+        profile.payoutPhone,
+        'EduBridge earnings payout',
+      );
+      nkwaPayoutId = disbursement.id;
     } catch (err: any) {
-      this.logger.error(`Stripe transfer failed: ${err.message}`);
+      this.logger.error(`Nkwa disbursement failed: ${err.message}`);
       throw new BadRequestException(`Payout failed: ${err.message}`);
     }
 
     const payout = await this.prisma.payout.create({
       data: {
         instructorId:  profile.id,
-        amount:        dto.amount,
-        currency:      currency.toUpperCase(),
+        amount,
+        currency,
         status:        'paid',
-        stripePayoutId,
-        description:   `Payout of ${currency.toUpperCase()} ${dto.amount.toFixed(2)}`,
+        stripePayoutId: nkwaPayoutId, // reuse existing column to store the Nkwa disbursement id
+        description:   `Payout of ${currency} ${amount}`,
         processedAt:   new Date(),
       },
     });
@@ -188,15 +166,15 @@ export class PayoutsService {
     const user = profile.user as any;
     this.notificationsService.notifyInstructorPayout(
       instructorId,
-      dto.amount,
-      currency.toUpperCase(),
+      amount,
+      currency,
       'Earnings payout',
       payout.id,
     ).catch(() => {});
 
     if (user?.email) {
       this.emailService
-        .sendPaymentReceipt(user.email, `${user.firstName} ${user.lastName}`, 'EduBridge', dto.amount, currency.toUpperCase(), payout.id)
+        .sendPaymentReceipt(user.email, `${user.firstName} ${user.lastName}`, 'EduBridge', amount, currency, payout.id)
         .catch(() => {});
     }
 

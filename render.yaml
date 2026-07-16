@@ -1,0 +1,60 @@
+# Render blueprint for the EduBridge backend (free tier).
+# In Render: New → Blueprint → point at this repo. Secrets marked `sync: false`
+# are set in the Render dashboard (never committed).
+services:
+  - type: web
+    name: edubridge-api
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    region: virginia
+    healthCheckPath: /api/v1/health/live
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: "3000"
+
+      # ── Database (Neon) ──────────────────────────────────────────────
+      # DATABASE_URL = Neon POOLED connection string (app runtime)
+      # DIRECT_URL   = Neon DIRECT (non-pooled) string (Prisma migrations)
+      - key: DATABASE_URL
+        sync: false
+      - key: DIRECT_URL
+        sync: false
+
+      # ── Auth secrets (auto-generated strong values) ──────────────────
+      - key: JWT_SECRET
+        generateValue: true
+      - key: JWT_REFRESH_SECRET
+        generateValue: true
+
+      # ── Redis (Upstash) ──────────────────────────────────────────────
+      - key: REDIS_HOST
+        sync: false
+      - key: REDIS_PORT
+        value: "6379"
+      - key: REDIS_PASSWORD
+        sync: false
+      - key: REDIS_TLS
+        value: "true"
+
+      # ── App / CORS ───────────────────────────────────────────────────
+      - key: FRONTEND_URL
+        sync: false
+      - key: PLATFORM_CURRENCY
+        value: XAF
+      - key: INSTRUCTOR_SHARE
+        value: "0.7"
+
+      # ── Payments (Nkwa) — set when ready to test real payments ───────
+      - key: NKWA_BASE_URL
+        value: https://api.pay.mynkwa.com
+      - key: NKWA_API_KEY
+        sync: false
+      - key: NKWA_WEBHOOK_PUBLIC_KEY
+        sync: false
+
+      # ── Optional integrations (set as needed) ────────────────────────
+      # AWS_S3_* (video storage), EMAIL_* (SMTP), FIREBASE_* (push),
+      # LIVEKIT_* (live sessions), SENTRY_DSN — see DEPLOYMENT.md.

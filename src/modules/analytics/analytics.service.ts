@@ -335,11 +335,15 @@ export class AnalyticsService {
           },
         }),
 
-        // Revenue from payments
+        // Revenue from payments — Payment has no direct relation to Course/instructor,
+        // so it's scoped via the instructorId stored in metadata at purchase time
+        // (see payments.service.ts). Without this filter every instructor's dashboard
+        // shows the platform-wide revenue total instead of their own.
         this.prisma.payment.aggregate({
           _sum: { amount: true },
           where: {
             status: PaymentStatus.COMPLETED,
+            metadata: { path: ['instructorId'], equals: instructorId },
             ...whereCondition,
           },
         }),

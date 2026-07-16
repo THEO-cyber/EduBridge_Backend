@@ -1,6 +1,6 @@
 import { Controller, Get, Post, Body, Query, UseGuards } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
-import { PayoutsService, RequestPayoutDto } from './payouts.service';
+import { PayoutsService, RequestPayoutDto, ConnectPayoutDto } from './payouts.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { Roles } from '../../common/decorators/roles.decorator';
@@ -23,18 +23,26 @@ export class PayoutsController {
     return this.payoutsService.getEarningsDashboard(user.id);
   }
 
+  @Get('earnings')
+  @UseGuards(RolesGuard)
+  @Roles(Role.INSTRUCTOR)
+  @ApiOperation({ summary: 'Get instructor earnings (alias of dashboard)' })
+  earnings(@CurrentUser() user: User) {
+    return this.payoutsService.getEarningsDashboard(user.id);
+  }
+
   @Post('connect')
   @UseGuards(RolesGuard)
   @Roles(Role.INSTRUCTOR)
-  @ApiOperation({ summary: 'Get Stripe Connect onboarding link' })
-  connectStripe(@CurrentUser() user: User) {
-    return this.payoutsService.createConnectOnboardingLink(user.id);
+  @ApiOperation({ summary: 'Save your MoMo/Orange Money payout number' })
+  connect(@CurrentUser() user: User, @Body() dto: ConnectPayoutDto) {
+    return this.payoutsService.savePayoutPhone(user.id, dto);
   }
 
   @Post('request')
   @UseGuards(RolesGuard)
   @Roles(Role.INSTRUCTOR)
-  @ApiOperation({ summary: 'Request a payout to your connected Stripe account' })
+  @ApiOperation({ summary: 'Request a payout to your MoMo/Orange Money number' })
   requestPayout(@CurrentUser() user: User, @Body() dto: RequestPayoutDto) {
     return this.payoutsService.requestPayout(user.id, dto);
   }

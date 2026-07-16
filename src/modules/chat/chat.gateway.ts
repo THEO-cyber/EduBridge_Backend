@@ -122,6 +122,18 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
     const userId = socket.userId;
 
     try {
+      // Only actual chat participants may join the room's socket.io channel —
+      // without this check any authenticated user could read any chat by
+      // guessing/enumerating room IDs.
+      const allowed = await this.chatService.isParticipant(roomId, userId);
+      if (!allowed) {
+        socket.emit('room_error', {
+          message: 'Not authorized to join this chat room',
+          roomId,
+        });
+        return;
+      }
+
       socket.join(`chat:${roomId}`);
 
       // Track user's rooms for cleanup

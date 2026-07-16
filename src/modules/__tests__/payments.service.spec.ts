@@ -2,6 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { PaymentsService } from '../payments/payments.service';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { ConfigService } from '@nestjs/config';
+import { NkwaService } from '../../common/nkwa/nkwa.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import {
   BadRequestException,
@@ -29,12 +30,21 @@ const prismaMock = {
 
 const configMock = {
   get: jest.fn((key: string) => {
-    const vals: Record<string, string> = {
-      'stripe.secretKey':     'sk_test_placeholder',
-      'stripe.webhookSecret': 'whsec_placeholder',
+    const vals: Record<string, any> = {
+      'currency':        'XAF',
+      'instructorShare': 0.7,
+      'nkwa.apiKey':     'test_key',
+      'nkwa.baseUrl':    'https://api.pay.mynkwa.com',
     };
     return vals[key] ?? '';
   }),
+};
+
+const nkwaMock = {
+  collect:  jest.fn().mockResolvedValue({ id: 'nkwa_1', status: 'pending', telecomOperator: 'mtn' }),
+  disburse: jest.fn().mockResolvedValue({ id: 'nkwa_d1', status: 'pending' }),
+  getPayment: jest.fn().mockResolvedValue({ id: 'nkwa_1', status: 'pending' }),
+  verifyWebhook: jest.fn().mockReturnValue(true),
 };
 
 const notifMock = {
@@ -54,6 +64,7 @@ describe('PaymentsService', () => {
         PaymentsService,
         { provide: PrismaService,        useValue: prismaMock  },
         { provide: ConfigService,        useValue: configMock  },
+        { provide: NkwaService,          useValue: nkwaMock    },
         { provide: NotificationsService, useValue: notifMock   },
       ],
     }).compile();

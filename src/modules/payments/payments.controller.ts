@@ -39,7 +39,7 @@ export class PaymentsController {
   @ApiBearerAuth('JWT-auth')
   @UseGuards(JwtAuthGuard)
   @Post('create-intent')
-  @ApiOperation({ summary: 'Create payment intent for course purchase' })
+  @ApiOperation({ summary: 'Start a MoMo/Orange Money payment (Nkwa) for a course' })
   async createPaymentIntent(
     @CurrentUser() user: User,
     @Body() createPaymentDto: CreatePaymentDto,
@@ -47,14 +47,23 @@ export class PaymentsController {
     return this.paymentsService.createPaymentIntent(user.id, createPaymentDto);
   }
 
+  @ApiBearerAuth('JWT-auth')
+  @UseGuards(JwtAuthGuard)
+  @Get(':id/status')
+  @ApiOperation({ summary: 'Poll a payment status (confirms & finalizes enrollment)' })
+  async getPaymentStatus(@Param('id') id: string, @CurrentUser() user: User) {
+    return this.paymentsService.getPaymentStatus(user.id, id);
+  }
+
   @Public()
   @Post('webhook')
-  @ApiOperation({ summary: 'Stripe webhook endpoint (raw body required for signature)' })
+  @ApiOperation({ summary: 'Nkwa Pay webhook (X-Signature / X-Timestamp verified)' })
   async handleWebhook(
-    @Headers('stripe-signature') signature: string,
+    @Headers('x-signature') signature: string,
+    @Headers('x-timestamp') timestamp: string,
     @RawBody() payload: Buffer,
   ) {
-    return this.paymentsService.handleStripeWebhook(signature, payload);
+    return this.paymentsService.handleNkwaWebhook(signature, timestamp, payload);
   }
 
   @ApiBearerAuth('JWT-auth')

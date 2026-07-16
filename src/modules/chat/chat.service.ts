@@ -122,6 +122,16 @@ export class ChatService {
     return chatRoom;
   }
 
+  // Shared by the WS gateway (before allowing a socket to join a room) and any
+  // REST path that needs to authorize access to a chat's contents.
+  async isParticipant(chatId: string, userId: string): Promise<boolean> {
+    const participant = await this.prisma.chatParticipant.findFirst({
+      where: { chatId, userId },
+      select: { id: true },
+    });
+    return !!participant;
+  }
+
   async sendMessage(
     chatId: string,
     senderId: string,

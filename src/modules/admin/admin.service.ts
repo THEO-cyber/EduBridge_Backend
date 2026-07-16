@@ -1015,6 +1015,48 @@ export class AdminService {
 
   // ── Instructor moderation ──────────────────────────────────────────────────
 
+  async listInstructors(pagination: PaginationDto) {
+    const { page = 1, limit = 20, skip = 0 } = pagination;
+    const where = { role: Role.INSTRUCTOR };
+
+    const [users, total] = await Promise.all([
+      this.prisma.user.findMany({
+        where,
+        skip,
+        take: limit,
+        orderBy: { createdAt: 'desc' },
+        select: {
+          id: true,
+          email: true,
+          username: true,
+          firstName: true,
+          lastName: true,
+          avatar: true,
+          isActive: true,
+          createdAt: true,
+          instructorProfile: {
+            select: {
+              title: true,
+              expertise: true,
+              rating: true,
+              totalReviews: true,
+              totalStudents: true,
+              totalRevenue: true,
+              isVerified: true,
+            },
+          },
+          _count: { select: { courseCreated: true } },
+        },
+      }),
+      this.prisma.user.count({ where }),
+    ]);
+
+    return {
+      instructors: users,
+      pagination: { page, limit, total, pages: Math.ceil(total / (limit || 20)) },
+    };
+  }
+
   async suspendInstructor(instructorId: string, reason: string) {
     const user = await this.prisma.user.findUnique({ where: { id: instructorId } });
     if (!user) throw new NotFoundException('Instructor not found');

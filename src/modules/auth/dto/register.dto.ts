@@ -5,7 +5,7 @@ import {
   MinLength,
   MaxLength,
   IsOptional,
-  IsEnum,
+  IsIn,
   Matches,
 } from 'class-validator';
 import { Role } from '@prisma/client';
@@ -49,7 +49,11 @@ export class RegisterDto {
   })
   password!: string;
 
-  @ApiProperty({ enum: Role, example: Role.STUDENT, required: false })
+  // NOTE: vetted onboarding — this field is accepted for backward-compat but
+  // IGNORED by AuthService.register, which always creates a STUDENT. Becoming an
+  // INSTRUCTOR happens only via an admin-approved instructor application.
+  // Never widen this to allow ADMIN/SUPER_ADMIN.
+  @ApiProperty({ enum: [Role.STUDENT, Role.INSTRUCTOR], example: Role.STUDENT, required: false })
   @IsOptional()
   @Transform(({ value }) => {
     if (typeof value !== 'string') return value;
@@ -57,7 +61,7 @@ export class RegisterDto {
     if (normalized === 'LECTURER') return Role.INSTRUCTOR;
     return normalized as Role;
   })
-  @IsEnum(Role)
+  @IsIn([Role.STUDENT, Role.INSTRUCTOR])
   role?: Role = Role.STUDENT;
 
   @ApiProperty({ required: false })

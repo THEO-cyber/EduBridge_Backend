@@ -13,11 +13,13 @@ import { PrismaModule } from './common/prisma/prisma.module';
 import { EmailModule } from './common/email/email.module';
 import { createRedisConnection } from './common/redis/redis-connection.factory';
 import { FirebaseModule } from './common/firebase/firebase.module';
+import { NkwaModule } from './common/nkwa/nkwa.module';
 import { CacheModule } from './common/cache/cache.module';
 import { HealthModule } from './common/health/health.module';
 import { CorrelationIdMiddleware } from './common/middleware/correlation-id.middleware';
 import { winstonLogger } from './common/logger/winston.logger';
 import { configuration } from './config/configuration';
+import { envValidationSchema } from './config/env.validation';
 
 import { AuthModule } from './modules/auth/auth.module';
 import { UsersModule } from './modules/users/users.module';
@@ -54,6 +56,8 @@ import { MetricsModule } from './common/metrics/metrics.module';
       isGlobal: true,
       load: [configuration],
       envFilePath: ['.env.local', '.env'],
+      validationSchema: envValidationSchema,
+      validationOptions: { abortEarly: false },
     }),
 
     // ── Structured logging ─────────────────────────────────────────────────────
@@ -91,6 +95,7 @@ import { MetricsModule } from './common/metrics/metrics.module';
     PrismaModule,
     EmailModule,
     FirebaseModule,
+    NkwaModule,
     CacheModule,
     HealthModule,
     MetricsModule,

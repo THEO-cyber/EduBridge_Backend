@@ -7,25 +7,29 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { NkwaService } from '../../common/nkwa/nkwa.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { CreatePaymentDto } from './dto/create-payment.dto';
 import { PaymentStatus, TransactionType, EnrollmentStatus } from '@prisma/client';
-import Stripe from 'stripe';
 
 @Injectable()
 export class PaymentsService {
   private readonly logger = new Logger(PaymentsService.name);
-  private readonly stripe: Stripe;
 
   constructor(
     private readonly prisma: PrismaService,
     private readonly configService: ConfigService,
+    private readonly nkwa: NkwaService,
     private readonly notificationsService: NotificationsService,
-  ) {
-    const secretKey = this.configService.get<string>('stripe.secretKey') || '';
-    if (!secretKey) this.logger.warn('STRIPE_SECRET_KEY is not set');
+  ) {}
 
-    this.stripe = new Stripe(secretKey, { apiVersion: '2023-10-16' });
+  private get currency(): string {
+    return this.configService.get<string>('currency') || 'XAF';
+  }
+
+  private get instructorShare(): number {
+    const s = this.configService.get<number>('instructorShare');
+    return typeof s === 'number' && s > 0 && s < 1 ? s : 0.7;
   }
 
   async enrollFree(userId: string, courseId: string) {
@@ -40,7 +44,7 @@ export class PaymentsService {
 
     await this.prisma.$transaction([
       this.prisma.enrollment.create({
-        data: { userId, courseId, price: 0, currency: 'USD', status: 'ACTIVE' },
+        data: { userId, courseId, price: 0, currency: this.currency, status: 'ACTIVE' },
       }),
       this.prisma.course.update({
         where: { id: courseId },
@@ -51,12 +55,17 @@ export class PaymentsService {
     return { enrolled: true, courseId };
   }
 
+  /**
+   * Start a MoMo/Orange Money payment via Nkwa. The amount is ALWAYS derived
+   * server-side from the course price (+ optional coupon) — the client-supplied
+   * amount is ignored. The customer approves the charge on their handset; the
+   * final enrollment is granted once Nkwa confirms success (webhook or poll).
+   */
   async createPaymentIntent(userId: string, dto: CreatePaymentDto) {
     const course = await this.prisma.course.findUnique({
       where: { id: dto.courseId },
       include: { instructor: true },
     });
-
     if (!course) throw new NotFoundException('Course not found');
 
     const existing = await this.prisma.enrollment.findUnique({
@@ -64,13 +73,18 @@ export class PaymentsService {
     });
     if (existing) throw new BadRequestException('Already enrolled in this course');
 
-    let finalAmount = dto.amount;
+    // Authoritative server-side amount (XAF, zero-decimal → integer).
+    const listPrice =
+      course.discountPrice && Number(course.discountPrice) < Number(course.price)
+        ? Number(course.discountPrice)
+        : Number(course.price);
+
+    let finalAmount = listPrice;
     let appliedCoupon: any = null;
 
     if (dto.couponCode) {
       const coupon = await this.prisma.coupon.findUnique({ where: { code: dto.couponCode } });
       if (coupon && this.isCouponValid(coupon, dto.courseId)) {
-        // Per-user usage check — one coupon per user per course
         const priorUse = await this.prisma.payment.count({
           where: {
             userId,
@@ -78,142 +92,142 @@ export class PaymentsService {
             metadata: { path: ['couponCode'], equals: coupon.code },
           },
         });
-        if (priorUse > 0) {
-          throw new BadRequestException('You have already used this coupon');
-        }
+        if (priorUse > 0) throw new BadRequestException('You have already used this coupon');
         finalAmount = this.applyDiscount(finalAmount, coupon);
         appliedCoupon = coupon;
       }
     }
 
-    if (course.discountPrice && Number(course.discountPrice) < finalAmount) {
-      finalAmount = Number(course.discountPrice);
-    }
+    finalAmount = Math.max(1, Math.round(finalAmount));
 
-    // Clamp to $0.50 minimum (Stripe minimum charge)
-    finalAmount = Math.max(0.5, finalAmount);
-
-    const paymentIntent = await this.stripe.paymentIntents.create({
-      amount: Math.round(finalAmount * 100),
-      currency: (dto.currency || 'usd').toLowerCase(),
-      metadata: {
-        userId,
-        courseId: dto.courseId,
-        type: dto.type,
-        instructorId: course.instructorId,
-        originalAmount: dto.amount.toString(),
-        finalAmount: finalAmount.toString(),
-        couponCode: appliedCoupon?.code || '',
-      },
-    });
+    // Kick off the Nkwa collection (prompts the customer's phone).
+    const collection = await this.nkwa.collect(
+      finalAmount,
+      dto.phoneNumber,
+      `Course purchase: ${course.title}`,
+    );
 
     const payment = await this.prisma.payment.create({
       data: {
         userId,
         amount: finalAmount,
-        currency: dto.currency || 'USD',
+        currency: this.currency,
         status: PaymentStatus.PENDING,
-        type: dto.type,
-        stripePaymentIntentId: paymentIntent.id,
+        type: dto.type ?? TransactionType.COURSE_PURCHASE,
+        nkwaPaymentId: collection.id,
+        phoneNumber: dto.phoneNumber,
         description: `Course purchase: ${course.title}`,
         metadata: {
           courseId: dto.courseId,
           instructorId: course.instructorId,
           couponCode: appliedCoupon?.code,
+          finalAmount,
         },
       },
     });
 
     return {
       paymentId: payment.id,
-      clientSecret: paymentIntent.client_secret,
+      nkwaPaymentId: collection.id,
+      status: collection.status, // pending — customer must approve on their phone
+      operator: collection.telecomOperator,
       amount: finalAmount,
-      currency: dto.currency || 'USD',
+      currency: this.currency,
       course: { id: course.id, title: course.title, thumbnail: course.thumbnail },
     };
   }
 
-  async handleStripeWebhook(signature: string, rawBody: Buffer) {
-    const webhookSecret = this.configService.get<string>('stripe.webhookSecret') || '';
-    let event: Stripe.Event;
+  /**
+   * Client polls this after starting a payment. It asks Nkwa for the
+   * authoritative status and, on success, finalizes the enrollment (idempotent).
+   */
+  async getPaymentStatus(userId: string, paymentId: string) {
+    const payment = await this.prisma.payment.findUnique({ where: { id: paymentId } });
+    if (!payment) throw new NotFoundException('Payment not found');
+    if (payment.userId !== userId) throw new ForbiddenException('Access denied');
 
+    const status = await this.finalizeFromNkwa(payment.nkwaPaymentId ?? undefined);
+    return { paymentId: payment.id, status };
+  }
+
+  /** Nkwa webhook — verify signature if configured, then re-fetch to be sure. */
+  async handleNkwaWebhook(signature: string | undefined, timestamp: string | undefined, rawBody: Buffer) {
+    let body: any = {};
     try {
-      event = this.stripe.webhooks.constructEvent(rawBody, signature, webhookSecret);
-    } catch (err: any) {
-      this.logger.error(`Webhook signature verification failed: ${err.message}`);
-      throw new BadRequestException('Invalid webhook signature');
+      body = rawBody?.length ? JSON.parse(rawBody.toString('utf8')) : {};
+    } catch {
+      throw new BadRequestException('Invalid webhook payload');
     }
 
-    switch (event.type) {
-      case 'payment_intent.succeeded':
-        await this.handlePaymentSuccess(event.data.object as Stripe.PaymentIntent);
-        break;
-      case 'payment_intent.payment_failed':
-        await this.handlePaymentFailure(event.data.object as Stripe.PaymentIntent);
-        break;
-      default:
-        this.logger.debug(`Unhandled Stripe event: ${event.type}`);
+    // Signature is best-effort; the authoritative check is re-fetching the
+    // payment from Nkwa inside finalizeFromNkwa, so a spoofed body cannot grant
+    // access to a payment that did not actually succeed.
+    const verified = this.nkwa.verifyWebhook(signature, timestamp, rawBody);
+    if (!verified) {
+      this.logger.warn('Nkwa webhook signature not verified — relying on authoritative re-fetch.');
     }
 
+    const nkwaPaymentId = body?.id || body?.data?.id;
+    if (!nkwaPaymentId) return { received: true };
+
+    await this.finalizeFromNkwa(nkwaPaymentId);
     return { received: true };
   }
 
+  /**
+   * Refund a completed payment: reverse the enrollment and disburse the amount
+   * back to the payer's MoMo/Orange number via Nkwa.
+   */
   async refundPayment(userId: string, paymentId: string, reason?: string) {
     const payment = await this.prisma.payment.findUnique({ where: { id: paymentId } });
 
     if (!payment) throw new NotFoundException('Payment not found');
-    if (payment.userId !== userId) throw new BadRequestException('Not your payment');
+    if (payment.userId !== userId) throw new ForbiddenException('Not your payment');
     if (payment.status !== 'COMPLETED') throw new BadRequestException('Only completed payments can be refunded');
-    if (!payment.stripePaymentIntentId) throw new BadRequestException('No Stripe payment found');
+    if (!payment.phoneNumber) throw new BadRequestException('No payer phone number on record');
 
-    try {
-      const refund = await this.stripe.refunds.create({
-        payment_intent: payment.stripePaymentIntentId,
-        reason: (reason as any) ?? 'requested_by_customer',
+    const courseId = (payment.metadata as any)?.courseId;
+    const instructorId = (payment.metadata as any)?.instructorId;
+
+    // Disburse the refund back to the payer.
+    const disbursement = await this.nkwa.disburse(
+      Number(payment.amount),
+      payment.phoneNumber,
+      `Refund${reason ? `: ${reason}` : ''}`,
+    );
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.payment.update({
+        where: { id: paymentId },
+        data: { status: 'REFUNDED', refundId: disbursement.id },
       });
 
-      const courseId = (payment.metadata as any)?.courseId;
-
-      await this.prisma.$transaction(async (tx) => {
-        await tx.payment.update({
-          where: { id: paymentId },
-          data: { status: 'REFUNDED', refundId: refund.id },
+      if (courseId) {
+        await tx.enrollment.updateMany({
+          where: { userId, courseId },
+          data: { status: 'REFUNDED', refundedAt: new Date() },
         });
-
-        if (courseId) {
-          await tx.enrollment.updateMany({
-            where: { userId, courseId },
-            data: { status: 'REFUNDED', refundedAt: new Date() },
-          });
-
-          await tx.course.update({
-            where: { id: courseId },
+        await tx.course.update({
+          where: { id: courseId },
+          data: {
+            totalEnrollments: { decrement: 1 },
+            totalRevenue: { decrement: Number(payment.amount) },
+          },
+        });
+        if (instructorId) {
+          await tx.instructorProfile.update({
+            where: { userId: instructorId },
             data: {
-              totalEnrollments: { decrement: 1 },
-              totalRevenue: { decrement: Number(payment.amount) },
+              totalRevenue: { decrement: Number(payment.amount) * this.instructorShare },
+              totalStudents: { decrement: 1 },
             },
           });
-
-          // Claw back instructor share
-          const instructorId = (payment.metadata as any)?.instructorId;
-          if (instructorId) {
-            await tx.instructorProfile.update({
-              where: { userId: instructorId },
-              data: {
-                totalRevenue: { decrement: Number(payment.amount) * 0.7 },
-                totalStudents: { decrement: 1 },
-              },
-            });
-          }
         }
-      });
+      }
+    });
 
-      this.logger.log(`Refunded payment ${paymentId} — Stripe refund ${refund.id}`);
-      return { success: true, refundId: refund.id, amount: Number(payment.amount) };
-    } catch (err: any) {
-      this.logger.error(`Refund failed: ${err.message}`);
-      throw new BadRequestException(`Refund failed: ${err.message}`);
-    }
+    this.logger.log(`Refunded payment ${paymentId} — Nkwa disbursement ${disbursement.id}`);
+    return { success: true, refundId: disbursement.id, amount: Number(payment.amount) };
   }
 
   async getPaymentHistory(userId: string, page = 1, limit = 20) {
@@ -240,153 +254,156 @@ export class PaymentsService {
     if (!payment) throw new NotFoundException('Payment not found');
     if (payment.userId !== userId) throw new ForbiddenException('Access denied');
 
-    const meta = payment.metadata as Record<string, any> ?? {};
+    const meta = (payment.metadata as Record<string, any>) ?? {};
 
     let course: { title: string; instructor: { firstName: string; lastName: string } } | null = null;
     if (meta.courseId) {
-      course = await this.prisma.course.findUnique({
+      course = (await this.prisma.course.findUnique({
         where: { id: meta.courseId },
         select: {
           title: true,
           instructor: { select: { firstName: true, lastName: true } },
         },
-      }) as any;
+      })) as any;
     }
 
     return {
       invoiceNumber: `INV-${payment.id.slice(-8).toUpperCase()}`,
-      issuedAt:      payment.createdAt,
-      status:        payment.status,
+      issuedAt: payment.createdAt,
+      status: payment.status,
       customer: {
-        name:  `${payment.user.firstName} ${payment.user.lastName}`,
+        name: `${payment.user.firstName} ${payment.user.lastName}`,
         email: payment.user.email,
       },
       items: course
         ? [{ description: `Course: ${course.title}`, instructorName: `${course.instructor.firstName} ${course.instructor.lastName}`, amount: Number(payment.amount) }]
         : [{ description: payment.description ?? 'Purchase', amount: Number(payment.amount) }],
-      subtotal:          Number(payment.amount),
-      discount:          meta.originalPrice ? Number(meta.originalPrice) - Number(payment.amount) : 0,
-      total:             Number(payment.amount),
-      currency:          payment.currency,
-      stripePaymentId:   payment.stripePaymentIntentId,
-      paymentType:       payment.type,
+      subtotal: Number(payment.amount),
+      discount: meta.originalPrice ? Number(meta.originalPrice) - Number(payment.amount) : 0,
+      total: Number(payment.amount),
+      currency: payment.currency,
+      providerPaymentId: payment.nkwaPaymentId,
+      paymentType: payment.type,
     };
   }
 
   // ─── Private helpers ────────────────────────────────────────────────────────
 
-  private async handlePaymentSuccess(intent: Stripe.PaymentIntent) {
-    const m = intent.metadata;
+  /**
+   * Ask Nkwa for the authoritative status of a payment and finalize accordingly.
+   * Idempotent: safe to call from both the webhook and the client poll.
+   */
+  private async finalizeFromNkwa(nkwaPaymentId?: string): Promise<PaymentStatus> {
+    if (!nkwaPaymentId) return PaymentStatus.PENDING;
 
-    // Idempotency guard — skip if this intent was already processed
-    const existingPayment = await this.prisma.payment.findUnique({
-      where: { stripePaymentIntentId: intent.id },
+    const local = await this.prisma.payment.findUnique({
+      where: { nkwaPaymentId },
       select: { status: true },
     });
-    if (existingPayment?.status === PaymentStatus.COMPLETED) {
-      this.logger.warn(`Duplicate webhook ignored: payment_intent ${intent.id} already completed`);
-      return;
-    }
+    if (local?.status === PaymentStatus.COMPLETED) return PaymentStatus.COMPLETED;
 
+    const remote = await this.nkwa.getPayment(nkwaPaymentId);
+
+    if (remote.status === 'success') {
+      await this.grantEnrollment(nkwaPaymentId);
+      return PaymentStatus.COMPLETED;
+    }
+    if (remote.status === 'failed' || remote.status === 'canceled') {
+      await this.prisma.payment.updateMany({
+        where: { nkwaPaymentId, status: PaymentStatus.PENDING },
+        data: { status: PaymentStatus.FAILED },
+      });
+      return PaymentStatus.FAILED;
+    }
+    return PaymentStatus.PENDING;
+  }
+
+  private async grantEnrollment(nkwaPaymentId: string) {
+    const payment = await this.prisma.payment.findUnique({ where: { nkwaPaymentId } });
+    if (!payment) return;
+    if (payment.status === PaymentStatus.COMPLETED) return; // idempotency
+
+    const m = (payment.metadata as any) ?? {};
+    const userId = payment.userId;
+    const courseId = m.courseId;
+    const instructorId = m.instructorId;
+    const finalAmount = Number(m.finalAmount ?? payment.amount);
+
+    // Skip if already enrolled (idempotency safety net).
     const existingEnrollment = await this.prisma.enrollment.findUnique({
-      where: { userId_courseId: { userId: m.userId, courseId: m.courseId } },
+      where: { userId_courseId: { userId, courseId } },
       select: { id: true },
     });
-    if (existingEnrollment) {
-      this.logger.warn(`Duplicate webhook ignored: enrollment already exists for user=${m.userId} course=${m.courseId}`);
-      return;
-    }
 
     try {
       await this.prisma.$transaction(async (tx) => {
-        // 1. Mark payment completed
         await tx.payment.update({
-          where: { stripePaymentIntentId: intent.id },
+          where: { id: payment.id },
           data: { status: PaymentStatus.COMPLETED },
         });
 
-        // 2. Create enrollment
-        await tx.enrollment.create({
-          data: {
-            userId: m.userId,
-            courseId: m.courseId,
-            price: Number(m.finalAmount),
-            currency: intent.currency.toUpperCase(),
-            status: EnrollmentStatus.ACTIVE,
-          },
-        });
+        if (!existingEnrollment) {
+          await tx.enrollment.create({
+            data: {
+              userId,
+              courseId,
+              price: finalAmount,
+              currency: payment.currency,
+              status: EnrollmentStatus.ACTIVE,
+            },
+          });
 
-        // 3. Update course stats
-        await tx.course.update({
-          where: { id: m.courseId },
-          data: {
-            totalEnrollments: { increment: 1 },
-            totalRevenue: { increment: Number(m.finalAmount) },
-          },
-        });
+          await tx.course.update({
+            where: { id: courseId },
+            data: {
+              totalEnrollments: { increment: 1 },
+              totalRevenue: { increment: finalAmount },
+            },
+          });
 
-        // 4. Instructor earnings (70% platform split)
-        const instructorEarnings = Number(m.finalAmount) * 0.7;
-        await tx.instructorProfile.update({
-          where: { userId: m.instructorId },
-          data: {
-            totalRevenue: { increment: instructorEarnings },
-            totalStudents: { increment: 1 },
-          },
-        });
+          if (instructorId) {
+            await tx.instructorProfile.update({
+              where: { userId: instructorId },
+              data: {
+                totalRevenue: { increment: finalAmount * this.instructorShare },
+                totalStudents: { increment: 1 },
+              },
+            });
+          }
 
-        // 5. Increment coupon usage
-        if (m.couponCode) {
-          await tx.coupon.update({
-            where: { code: m.couponCode },
-            data: { usedCount: { increment: 1 } },
+          if (m.couponCode) {
+            await tx.coupon.updateMany({
+              where: { code: m.couponCode },
+              data: { usedCount: { increment: 1 } },
+            });
+          }
+
+          await tx.userAnalytics.upsert({
+            where: { userId },
+            create: { userId, totalCoursesEnrolled: 1, totalSpent: finalAmount },
+            update: {
+              totalCoursesEnrolled: { increment: 1 },
+              totalSpent: { increment: finalAmount },
+            },
           });
         }
-
-        // 6. User analytics
-        await tx.userAnalytics.upsert({
-          where: { userId: m.userId },
-          create: { userId: m.userId, totalCoursesEnrolled: 1, totalSpent: Number(m.finalAmount) },
-          update: {
-            totalCoursesEnrolled: { increment: 1 },
-            totalSpent: { increment: Number(m.finalAmount) },
-          },
-        });
       });
 
-      // 7. Fire notification (outside transaction — non-critical)
+      // Non-critical side effects outside the transaction.
       try {
-        const course = await this.prisma.course.findUnique({ where: { id: m.courseId }, select: { title: true } });
-        if (course) {
-          await this.notificationsService.notifyPaymentSuccess(
-            m.userId,
-            course.title,
-            Number(m.finalAmount),
-            intent.currency,
-            intent.id,
-          );
-          await this.notificationsService.notifyEnrollmentSuccess(m.userId, course.title, m.courseId);
+        const course = await this.prisma.course.findUnique({ where: { id: courseId }, select: { title: true } });
+        if (course && !existingEnrollment) {
+          await this.notificationsService.notifyPaymentSuccess(userId, course.title, finalAmount, payment.currency, nkwaPaymentId);
+          await this.notificationsService.notifyEnrollmentSuccess(userId, course.title, courseId);
         }
       } catch (notifErr: any) {
         this.logger.warn(`Notification failed: ${notifErr.message}`);
       }
 
-      this.logger.log(`Payment success: course=${m.courseId} user=${m.userId}`);
+      this.logger.log(`Payment success: course=${courseId} user=${userId}`);
     } catch (error: any) {
-      this.logger.error(`Payment processing failed: ${error.message}`, error.stack);
+      this.logger.error(`Payment finalization failed: ${error.message}`, error.stack);
       throw error;
-    }
-  }
-
-  private async handlePaymentFailure(intent: Stripe.PaymentIntent) {
-    try {
-      await this.prisma.payment.update({
-        where: { stripePaymentIntentId: intent.id },
-        data: { status: PaymentStatus.FAILED },
-      });
-      this.logger.log(`Payment failed: ${intent.id}`);
-    } catch (error: any) {
-      this.logger.error(`Failed to record payment failure: ${error.message}`);
     }
   }
 
