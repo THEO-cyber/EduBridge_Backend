@@ -83,12 +83,29 @@ async function bootstrap() {
   const allowedOrigins = (configService.get<string>('frontendUrl') ?? 'http://localhost:3000')
     .split(',').map((o) => o.trim()).filter(Boolean);
 
+  // Entries may use a wildcard for the subdomain, e.g. https://*.netlify.app,
+  // which covers deploy previews without listing every generated hostname.
+  const originAllowed = (origin: string): boolean =>
+    allowedOrigins.some((rule) => {
+      if (rule === '*' || rule === origin) return true;
+      if (!rule.includes('*')) return false;
+      const pattern = rule
+        .replace(/[.+?^${}()|[\]\\]/g, '\\$&') // escape regex metacharacters
+        .replace(/\*/g, '[^.]+');              // * matches one label only
+      return new RegExp(`^${pattern}$`).test(origin);
+    });
+
   app.enableCors({
     origin: (origin, cb) => {
       // No origin = server-to-server / curl — always allow
       if (!origin) return cb(null, true);
-      if (allowedOrigins.includes(origin)) return cb(null, true);
-      cb(new Error(`Origin ${origin} not allowed by CORS policy`));
+      if (originAllowed(origin)) return cb(null, true);
+      // Deny without throwing: throwing surfaces as a 500 and buries the real
+      // cause, while the browser only ever sees "failed to fetch" either way.
+      logger.warn(
+        `CORS: blocked origin ${origin}. Add it to FRONTEND_URL (comma-separated) to allow it.`,
+      );
+      return cb(null, false);
     },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
