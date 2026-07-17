@@ -4,12 +4,14 @@ import {
   IsEnum,
   IsOptional,
   IsBoolean,
+  IsInt,
+  Min,
   MinLength,
   MaxLength,
   IsDateString,
   IsUUID,
 } from 'class-validator';
-import { ApiProperty } from '@nestjs/swagger';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Role, CourseStatus } from '@prisma/client';
 import { Transform } from 'class-transformer';
 import { PaginationDto } from '../../../common/dto/pagination.dto';
@@ -162,6 +164,23 @@ export class CreateCategoryDto {
   @IsString()
   @MaxLength(500)
   description?: string;
+
+  @ApiPropertyOptional({ example: '💻', description: 'Emoji shown on the category card' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(16)
+  icon?: string;
+
+  @ApiPropertyOptional({ example: true, description: 'Hidden from learners when false' })
+  @IsOptional()
+  @IsBoolean()
+  isActive?: boolean;
+
+  @ApiPropertyOptional({ example: 0, description: 'Lower sorts first' })
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  sortOrder?: number;
 }
 
 export class UpdateCategoryDto {
@@ -180,6 +199,23 @@ export class UpdateCategoryDto {
   @IsString()
   @MaxLength(500)
   description?: string;
+
+  @ApiPropertyOptional({ example: '💻', description: 'Emoji shown on the category card' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(16)
+  icon?: string;
+
+  @ApiPropertyOptional({ example: true, description: 'Hidden from learners when false' })
+  @IsOptional()
+  @IsBoolean()
+  isActive?: boolean;
+
+  @ApiPropertyOptional({ example: 0, description: 'Lower sorts first' })
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  sortOrder?: number;
 }
 
 export class RejectCourseDto {

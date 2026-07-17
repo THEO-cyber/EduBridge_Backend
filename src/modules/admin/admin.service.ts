@@ -19,6 +19,7 @@ import {
   VideoStatus,
 } from '@prisma/client';
 import { VideoProcessingService } from '../video-processing/video-processing.service';
+import { CacheService } from '../../common/cache/cache.service';
 import * as bcryptjs from 'bcryptjs';
 
 interface UserFilters {
@@ -65,7 +66,17 @@ export class AdminService {
     private readonly emailService: EmailService,
     private readonly notificationsService: NotificationsService,
     private readonly videoProcessingService: VideoProcessingService,
+    private readonly cache: CacheService,
   ) {}
+
+  /**
+   * The public category list (/search/categories) is cached for 10 minutes, so
+   * without this an admin's change stays invisible to learners for that long
+   * and looks like the console silently failed.
+   */
+  private async invalidateCategoryCache(): Promise<void> {
+    await this.cache.del(CacheService.keys.categories());
+  }
 
   // User Management
   async getUsers(paginationDto: PaginationDto, filters: UserFilters = {}) {
@@ -684,31 +695,64 @@ export class AdminService {
   }
 
   // Category Management
-  async createCategory(name: string, description?: string) {
-    // Check if category already exists
-    const existingCategory = await this.prisma.category.findUnique({
-      where: { name },
-    });
+  /** URL-safe slug. Clients filter courses by slug, so it must stay clean. */
+  private slugify(name: string): string {
+    return name
+      .toLowerCase()
+      .trim()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '');
+  }
 
+  /** Slugs are unique, so a colliding name gets a numeric suffix. */
+  private async uniqueSlug(name: string, ignoreId?: string): Promise<string> {
+    const base = this.slugify(name) || 'category';
+    let slug = base;
+    for (let i = 2; ; i++) {
+      const clash = await this.prisma.category.findUnique({ where: { slug } });
+      if (!clash || clash.id === ignoreId) return slug;
+      slug = `${base}-${i}`;
+    }
+  }
+
+  async createCategory(dto: {
+    name: string;
+    description?: string;
+    icon?: string;
+    isActive?: boolean;
+    sortOrder?: number;
+  }) {
+    const existingCategory = await this.prisma.category.findUnique({
+      where: { name: dto.name },
+    });
     if (existingCategory) {
       throw new BadRequestException('Category already exists');
     }
 
     const category = await this.prisma.category.create({
       data: {
-        name,
-        slug: name.toLowerCase().replace(/\s+/g, '-'),
-        description,
+        name: dto.name,
+        slug: await this.uniqueSlug(dto.name),
+        description: dto.description,
+        ...(dto.icon !== undefined && { icon: dto.icon }),
+        ...(dto.isActive !== undefined && { isActive: dto.isActive }),
+        ...(dto.sortOrder !== undefined && { sortOrder: dto.sortOrder }),
       },
     });
 
+    await this.invalidateCategoryCache();
     return category;
   }
 
   async updateCategory(
     categoryId: string,
-    name?: string,
-    description?: string,
+    dto: {
+      name?: string;
+      description?: string;
+      icon?: string;
+      isActive?: boolean;
+      sortOrder?: number;
+    },
   ) {
     const category = await this.prisma.category.findUnique({
       where: { id: categoryId },
@@ -719,9 +763,9 @@ export class AdminService {
     }
 
     // Check for name conflicts if updating name
-    if (name && name !== category.name) {
+    if (dto.name && dto.name !== category.name) {
       const conflictingCategory = await this.prisma.category.findUnique({
-        where: { name },
+        where: { name: dto.name },
       });
 
       if (conflictingCategory) {
@@ -729,14 +773,23 @@ export class AdminService {
       }
     }
 
+    const renamed = !!dto.name && dto.name !== category.name;
+
     const updatedCategory = await this.prisma.category.update({
       where: { id: categoryId },
       data: {
-        ...(name && { name }),
-        ...(description !== undefined && { description }),
+        ...(dto.name && { name: dto.name }),
+        // Keep the slug in step with the name, or clients keep filtering on a
+        // slug that no longer reflects the category.
+        ...(renamed && { slug: await this.uniqueSlug(dto.name!, categoryId) }),
+        ...(dto.description !== undefined && { description: dto.description }),
+        ...(dto.icon !== undefined && { icon: dto.icon }),
+        ...(dto.isActive !== undefined && { isActive: dto.isActive }),
+        ...(dto.sortOrder !== undefined && { sortOrder: dto.sortOrder }),
       },
     });
 
+    await this.invalidateCategoryCache();
     return updatedCategory;
   }
 
@@ -764,6 +817,7 @@ export class AdminService {
       where: { id: categoryId },
     });
 
+    await this.invalidateCategoryCache();
     return { success: true, message: 'Category deleted successfully' };
   }
 

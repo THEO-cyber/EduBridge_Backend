@@ -253,10 +253,7 @@ export class AdminController {
   @Post('categories')
   @ApiOperation({ summary: 'Create new category' })
   async createCategory(@Body() createCategoryDto: CreateCategoryDto) {
-    return this.adminService.createCategory(
-      createCategoryDto.name,
-      createCategoryDto.description,
-    );
+    return this.adminService.createCategory(createCategoryDto);
   }
 
   @Put('categories/:id')
@@ -265,11 +262,7 @@ export class AdminController {
     @Param('id') categoryId: string,
     @Body() updateCategoryDto: UpdateCategoryDto,
   ) {
-    return this.adminService.updateCategory(
-      categoryId,
-      updateCategoryDto.name,
-      updateCategoryDto.description,
-    );
+    return this.adminService.updateCategory(categoryId, updateCategoryDto);
   }
 
   @Delete('categories/:id')
