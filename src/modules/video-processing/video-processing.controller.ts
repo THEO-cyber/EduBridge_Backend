@@ -12,6 +12,7 @@ import {
   BadRequestException,
   Header,
   Res,
+  Req,
   HttpCode,
   HttpStatus,
 } from '@nestjs/common';
@@ -24,13 +25,26 @@ import {
   ApiBody,
   ApiQuery,
 } from '@nestjs/swagger';
-import { Response } from 'express';
+import { Request, Response } from 'express';
 import { VideoProcessingService } from './video-processing.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { Roles } from '../../common/decorators/roles.decorator';
+import { Public } from '../../common/decorators/public.decorator';
 import { Role, User } from '@prisma/client';
+
+/**
+ * Absolute base URL the player should use for playlist requests. PUBLIC_API_URL
+ * wins because the API sits behind an edge proxy, so the request host is not
+ * necessarily the address clients can reach.
+ */
+function publicBaseUrl(req: Request): string {
+  const configured = process.env.PUBLIC_API_URL;
+  if (configured) return configured.replace(/\/+$/, '');
+  const proto = (req.headers['x-forwarded-proto'] as string) || req.protocol || 'https';
+  return `${proto}://${req.get('host')}${(req.baseUrl || '').replace(/\/+$/, '')}`;
+}
 import {
   IsString,
   IsEnum,
@@ -264,6 +278,73 @@ export class VideoProcessingController {
     res.set('Content-Type', 'application/vnd.apple.mpegurl');
     res.set('Cache-Control', 'no-cache');
     res.send(manifest);
+  }
+
+  // ── Adaptive bitrate streaming + offline download ───────────────────────────
+
+  @Get('playback/:videoId')
+  @ApiOperation({
+    summary:
+      'How to play this video: an adaptive HLS master playlist when renditions exist, otherwise a presigned MP4',
+  })
+  async getPlaybackInfo(
+    @Param('videoId') videoId: string,
+    @CurrentUser() user: User,
+    @Req() req: Request,
+  ) {
+    return this.videoProcessingService.getPlaybackInfo(videoId, user.id, publicBaseUrl(req));
+  }
+
+  @Public()
+  @Get('hls/:videoId/master.m3u8')
+  @ApiOperation({
+    summary:
+      'Adaptive HLS master playlist listing every rendition. Authorised by the ?t= playback token, since native players cannot send auth headers.',
+  })
+  async getMasterPlaylist(
+    @Param('videoId') videoId: string,
+    @Query('t') token: string,
+    @Req() req: Request,
+    @Res() res: Response,
+  ) {
+    const body = await this.videoProcessingService.getMasterPlaylist(
+      videoId,
+      token,
+      publicBaseUrl(req),
+    );
+    res.set('Content-Type', 'application/vnd.apple.mpegurl');
+    res.set('Cache-Control', 'no-cache');
+    res.send(body);
+  }
+
+  @Public()
+  @Get('hls/:videoId/:quality/playlist.m3u8')
+  @ApiOperation({
+    summary: 'Rendition playlist with presigned segment URLs (authorised by ?t= playback token)',
+  })
+  async getVariantPlaylist(
+    @Param('videoId') videoId: string,
+    @Param('quality') quality: string,
+    @Query('t') token: string,
+    @Res() res: Response,
+  ) {
+    const body = await this.videoProcessingService.getVariantPlaylist(videoId, quality, token);
+    res.set('Content-Type', 'application/vnd.apple.mpegurl');
+    res.set('Cache-Control', 'no-cache');
+    res.send(body);
+  }
+
+  @Get('download-url/:videoId')
+  @ApiOperation({
+    summary:
+      'Presigned URL for offline download. Defaults to the smallest rendition to save the learner’s data bundle.',
+  })
+  @ApiQuery({ name: 'quality', required: false, enum: ['360p', '480p', '720p', '1080p'] })
+  async getDownloadUrl(
+    @Param('videoId') videoId: string,
+    @Query('quality') quality?: string,
+  ) {
+    return this.videoProcessingService.getDownloadUrl(videoId, quality);
   }
 
   // ── Delete ──────────────────────────────────────────────────────────────────

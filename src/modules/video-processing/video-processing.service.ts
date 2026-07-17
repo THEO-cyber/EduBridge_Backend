@@ -2,10 +2,12 @@ import {
   Injectable,
   NotFoundException,
   BadRequestException,
+  UnauthorizedException,
   Logger,
 } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { ConfigService } from '@nestjs/config';
+import { JwtService } from '@nestjs/jwt';
 import { VideoStatus } from '@prisma/client';
 import {
   S3Client,
@@ -72,6 +74,7 @@ export class VideoProcessingService {
   constructor(
     private prisma: PrismaService,
     private configService: ConfigService,
+    private readonly jwt: JwtService,
     @InjectQueue('video-processing') private videoQueue: any,
   ) {
     this.region = this.configService.get<string>('aws.region') || 'us-east-1';
@@ -622,15 +625,182 @@ export class VideoProcessingService {
     });
 
     if (!variant) throw new NotFoundException('HLS manifest not found for this quality');
+    return this.readS3Text(variant.s3Key);
+  }
 
-    const resp = await this.s3.send(
-      new GetObjectCommand({ Bucket: this.bucket, Key: variant.s3Key }),
+  private async readS3Text(key: string): Promise<string> {
+    const resp = await this.s3.send(new GetObjectCommand({ Bucket: this.bucket, Key: key }));
+    const chunks: Buffer[] = [];
+    for await (const chunk of resp.Body as any) chunks.push(chunk as Buffer);
+    return Buffer.concat(chunks).toString('utf-8');
+  }
+
+  // ── Adaptive bitrate streaming ─────────────────────────────────────────────
+  //
+  // Native players (ExoPlayer / AVPlayer) fetch the playlists themselves, and we
+  // cannot attach an Authorization header to those requests without it also being
+  // sent to the presigned object URLs — where S3/R2 rejects a request carrying two
+  // auth mechanisms. So playback is authorised by a short-lived token in the query
+  // string, and the media segments are presigned URLs that need no auth at all.
+
+  private readonly PLAYBACK_TTL = 6 * 3600; // 6h — long enough for any single lesson
+
+  async createPlaybackToken(videoId: string, userId: string): Promise<string> {
+    return this.jwt.signAsync(
+      { sub: userId, vid: videoId, typ: 'playback' },
+      { expiresIn: this.PLAYBACK_TTL },
+    );
+  }
+
+  private async assertPlaybackToken(token: string, videoId: string): Promise<void> {
+    if (!token) throw new UnauthorizedException('Playback token required');
+    try {
+      const payload: any = await this.jwt.verifyAsync(token);
+      if (payload?.typ !== 'playback' || payload?.vid !== videoId) {
+        throw new Error('token is not scoped to this video');
+      }
+    } catch {
+      throw new UnauthorizedException('Invalid or expired playback token');
+    }
+  }
+
+  /**
+   * Tells the client how to play a video: an adaptive HLS master playlist when
+   * renditions exist, otherwise a plain presigned MP4 (direct-play mode).
+   */
+  async getPlaybackInfo(videoId: string, userId: string, baseUrl: string) {
+    const video = await this.prisma.video.findUnique({
+      where: { id: videoId },
+      include: { variants: true },
+    });
+    if (!video) throw new NotFoundException('Video not found');
+    if (video.status !== VideoStatus.READY) {
+      throw new BadRequestException('Video is not ready for streaming');
+    }
+
+    const adaptive = video.variants.some((v: any) => v.s3Key.endsWith('.m3u8'));
+    if (adaptive) {
+      const token = await this.createPlaybackToken(videoId, userId);
+      return {
+        adaptive: true,
+        hlsUrl: `${baseUrl}/video-processing/hls/${videoId}/master.m3u8?t=${encodeURIComponent(token)}`,
+        renditions: video.variants
+          .filter((v: any) => v.s3Key.endsWith('.m3u8'))
+          .map((v: any) => v.quality),
+      };
+    }
+
+    // No renditions (direct-play): fall back to a single presigned file.
+    const { streamUrl } = await this.generateSignedUrl(videoId);
+    return { adaptive: false, hlsUrl: null, mp4Url: streamUrl, renditions: [] };
+  }
+
+  /** Master playlist: lists every rendition so the player can switch on bandwidth. */
+  async getMasterPlaylist(videoId: string, token: string, baseUrl: string): Promise<string> {
+    await this.assertPlaybackToken(token, videoId);
+
+    const variants = await this.prisma.videoVariant.findMany({
+      where: { videoId, s3Key: { endsWith: '.m3u8' } },
+    });
+    if (!variants.length) {
+      throw new NotFoundException('This video has no adaptive renditions');
+    }
+
+    const order = ['360p', '480p', '720p', '1080p'];
+    const sorted = [...variants].sort(
+      (a: any, b: any) => order.indexOf(a.quality) - order.indexOf(b.quality),
     );
 
-    const body = resp.Body as any;
-    const chunks: Buffer[] = [];
-    for await (const chunk of body) chunks.push(chunk);
-    return Buffer.concat(chunks).toString('utf-8');
+    const lines = ['#EXTM3U', '#EXT-X-VERSION:3'];
+    for (const v of sorted as any[]) {
+      const profile = QUALITY_PROFILES[v.quality];
+      // BANDWIDTH must be bits/sec and include audio. Stored bitrate is kbps.
+      const bandwidth = profile
+        ? (parseInt(profile.videoBitrate) + parseInt(profile.audioBitrate)) * 1000
+        : (v.bitrate || 1000) * 1000;
+      const resolution = v.resolution || profile?.resolution || '640x360';
+      lines.push(
+        `#EXT-X-STREAM-INF:BANDWIDTH=${bandwidth},RESOLUTION=${resolution},CODECS="avc1.4d401f,mp4a.40.2"`,
+      );
+      lines.push(
+        `${baseUrl}/video-processing/hls/${videoId}/${v.quality}/playlist.m3u8?t=${encodeURIComponent(token)}`,
+      );
+    }
+    return lines.join('\n') + '\n';
+  }
+
+  /**
+   * Rendition playlist. The stored playlist references segments by bare filename,
+   * so each is rewritten to an absolute presigned URL — the player then pulls the
+   * media straight from object storage and never touches this process again.
+   */
+  async getVariantPlaylist(videoId: string, quality: string, token: string): Promise<string> {
+    await this.assertPlaybackToken(token, videoId);
+
+    const variant = await this.prisma.videoVariant.findFirst({
+      where: { videoId, quality, s3Key: { endsWith: '.m3u8' } },
+    });
+    if (!variant) throw new NotFoundException(`No ${quality} rendition for this video`);
+
+    const raw = await this.readS3Text(variant.s3Key);
+    const dir = variant.s3Key.slice(0, variant.s3Key.lastIndexOf('/'));
+
+    const out = await Promise.all(
+      raw.split('\n').map(async (line) => {
+        const t = line.trim();
+        if (!t || t.startsWith('#')) return line; // directive or blank — keep as-is
+        return getSignedUrl(
+          this.s3,
+          new GetObjectCommand({ Bucket: this.bucket, Key: `${dir}/${t}` }),
+          { expiresIn: this.PLAYBACK_TTL },
+        );
+      }),
+    );
+    return out.join('\n');
+  }
+
+  /**
+   * A single downloadable file for offline study. Defaults to the smallest
+   * rendition so a learner spends as little of their data bundle as possible.
+   */
+  async getDownloadUrl(videoId: string, quality?: string) {
+    const video = await this.prisma.video.findUnique({
+      where: { id: videoId },
+      include: { variants: true },
+    });
+    if (!video) throw new NotFoundException('Video not found');
+    if (video.status !== VideoStatus.READY) {
+      throw new BadRequestException('Video is not ready for download');
+    }
+
+    // Offline playback needs one self-contained file, so HLS renditions are skipped.
+    const files = video.variants.filter((v: any) => !v.s3Key.endsWith('.m3u8'));
+    const order = ['360p', '480p', '720p', '1080p'];
+    const sorted = [...files].sort(
+      (a: any, b: any) => order.indexOf(a.quality) - order.indexOf(b.quality),
+    );
+
+    const chosen: any =
+      (quality && sorted.find((v: any) => v.quality === quality)) || sorted[0] || null;
+    const key = chosen?.s3Key ?? video.s3Key;
+    if (!key) throw new NotFoundException('No downloadable file for this video');
+
+    const url = await getSignedUrl(
+      this.s3,
+      new GetObjectCommand({ Bucket: this.bucket, Key: key }),
+      { expiresIn: this.PLAYBACK_TTL },
+    );
+
+    return {
+      url,
+      quality: chosen?.quality ?? 'source',
+      sizeBytes: Number(chosen?.fileSize ?? 0) || null,
+      available: sorted.map((v: any) => ({
+        quality: v.quality,
+        sizeBytes: Number(v.fileSize ?? 0) || null,
+      })),
+      expiresIn: this.PLAYBACK_TTL,
+    };
   }
 
   async deleteVideo(videoId: string, userId: string) {

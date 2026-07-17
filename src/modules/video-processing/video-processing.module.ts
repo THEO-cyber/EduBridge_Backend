@@ -1,5 +1,7 @@
 import { Module, Logger } from '@nestjs/common';
 import { BullModule } from '@nestjs/bullmq';
+import { JwtModule } from '@nestjs/jwt';
+import { ConfigModule, ConfigService } from '@nestjs/config';
 import { VideoProcessingController } from './video-processing.controller';
 import { VideoProcessingService } from './video-processing.service';
 import { VideoProcessingProcessor } from './video-processing.processor';
@@ -20,6 +22,15 @@ if (!redisAvailable) {
 @Module({
   imports: [
     BullModule.registerQueue({ name: 'video-processing' }),
+    // Used to mint the short-lived playback tokens that authorise HLS playlist
+    // requests coming from native players (which cannot send auth headers).
+    JwtModule.registerAsync({
+      imports: [ConfigModule],
+      inject: [ConfigService],
+      useFactory: (config: ConfigService) => ({
+        secret: config.get<string>('jwt.secret') ?? process.env.JWT_SECRET,
+      }),
+    }),
   ],
   controllers: [VideoProcessingController],
   providers: [
