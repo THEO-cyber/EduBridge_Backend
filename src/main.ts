@@ -1,6 +1,6 @@
 import './instrument'; // Sentry MUST be first import
 import { NestFactory } from '@nestjs/core';
-import { ValidationPipe } from '@nestjs/common';
+import { ValidationPipe, Logger } from '@nestjs/common';
 import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import { ConfigService } from '@nestjs/config';
 import { NestExpressApplication } from '@nestjs/platform-express';
@@ -21,12 +21,10 @@ import { probeRedis } from './common/redis/redis-connection.factory';
 const IS_WORKER = process.env.WORKER_MODE === 'true';
 
 async function bootstrap() {
-  console.log('[BOOT] Step 1: probing Redis...');
   const redisHost = process.env.REDIS_HOST ?? 'localhost';
   const redisPort = parseInt(process.env.REDIS_PORT ?? '6379', 10);
   const redisAvailable = await probeRedis(redisHost, redisPort, 1500);
   process.env.REDIS_AVAILABLE = redisAvailable ? 'true' : 'false';
-  console.log('[BOOT] Step 2: creating NestJS app...');
 
   // Dynamic import: evaluated NOW so VideoProcessingModule reads REDIS_AVAILABLE correctly
   const { AppModule } = await import('./app.module');
@@ -35,12 +33,10 @@ async function bootstrap() {
     bufferLogs: true,
     rawBody:    true,
   });
-  console.log('[BOOT] Step 3: app created, wiring logger...');
 
   // ── Structured logging (Winston) ────────────────────────────────────────────
   const logger = app.get(WINSTON_MODULE_NEST_PROVIDER);
   app.useLogger(logger);
-  console.log('[BOOT] Step 4: logger wired');
 
   if (redisAvailable) {
     logger.log(`Redis detected at ${redisHost}:${redisPort} ✓`, 'Bootstrap');
@@ -171,26 +167,26 @@ async function bootstrap() {
   // ── Graceful shutdown ────────────────────────────────────────────────────────
   app.enableShutdownHooks();
 
-  console.log('[BOOT] Step 5: about to listen on port', port);
   await app.listen(port, '0.0.0.0');
-  console.log('[BOOT] Step 6: listening!');
 
   logger.log(`EduBridge API  → http://localhost:${port}/api/v1`,  'Bootstrap');
   if (swaggerEnabled) logger.log(`Swagger docs   → http://localhost:${port}/api/docs`, 'Bootstrap');
   logger.log(`Environment    → ${nodeEnv}`, 'Bootstrap');
 }
 
+const processLogger = new Logger('Process');
+
 process.on('unhandledRejection', (reason) => {
-  console.error('UNHANDLED REJECTION:', reason);
+  processLogger.error('Unhandled promise rejection', reason instanceof Error ? reason.stack : String(reason));
   process.exit(1);
 });
 
 process.on('uncaughtException', (err) => {
-  console.error('UNCAUGHT EXCEPTION:', err);
+  processLogger.error('Uncaught exception', err.stack);
   process.exit(1);
 });
 
 bootstrap().catch((err) => {
-  console.error('BOOTSTRAP FAILED:', err);
+  processLogger.error('Bootstrap failed', err instanceof Error ? err.stack : String(err));
   process.exit(1);
 });

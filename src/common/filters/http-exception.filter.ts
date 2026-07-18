@@ -52,14 +52,26 @@ export class AllExceptionsFilter implements ExceptionFilter {
           message = 'Foreign key constraint violation';
           break;
         default:
-          message = `Database error: ${exception.code}`;
+          // Don't expose the raw Prisma error code to clients.
+          status = HttpStatus.INTERNAL_SERVER_ERROR;
+          message = 'A database error occurred';
       }
     } else if (exception instanceof Prisma.PrismaClientValidationError) {
       status = HttpStatus.BAD_REQUEST;
       message = 'Invalid data provided';
     } else if (exception instanceof Error) {
+      // Keep the real message for logs only (see below); never send it to the
+      // client, where it could leak internals (hosts, stack details, library
+      // internals). The client-facing message is sanitized for any 5xx.
       message = exception.message;
     }
+
+    // Never surface internal error text on a 5xx — respond with a safe,
+    // friendly message while the real detail goes to the logs + Sentry.
+    const clientMessage =
+      status >= 500
+        ? 'Something went wrong on our end. Please try again in a moment.'
+        : message;
 
     if (status >= 500) {
       this.logger.error(
@@ -81,7 +93,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
 
     response.status(status).json({
       statusCode: status,
-      message,
+      message: clientMessage,
       ...(errors && { errors }),
       timestamp: new Date().toISOString(),
       path: request.url,
