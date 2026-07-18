@@ -33,6 +33,15 @@ export class EmailService {
     });
   }
 
+  /**
+   * Whether SMTP credentials are present. When false, send() safely no-ops —
+   * surfaced by the admin integrations health check so ops can tell whether
+   * emails will actually go out.
+   */
+  get isConfigured(): boolean {
+    return !!this.configService.get<string>('email.user');
+  }
+
   // ─── Core send ────────────────────────────────────────────────────────────
   // When Redis is available: enqueue the job (BullMQ handles 3 retries with
   // exponential backoff, persistent across restarts, visible in Bull Board).
