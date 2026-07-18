@@ -41,18 +41,40 @@ export class SchedulerService {
 
     for (const session of upcoming) {
       const instructor = session.instructor as any;
-      const student    = session.student    as any;
 
-      await Promise.allSettled([
+      // Recipients = the 1-on-1 student (if any) PLUS every student accepted
+      // into a group session (SessionRequest with status IN_PROGRESS). Without
+      // this, group-session attendees never get the "class is starting" push.
+      const accepted = await this.prisma.sessionRequest.findMany({
+        where:   { liveSessionId: session.id, status: SessionStatus.IN_PROGRESS } as any,
+        include: { student: { select: { id: true, email: true, firstName: true, lastName: true } } },
+      });
+
+      const studentsById = new Map<string, any>();
+      if (session.student) studentsById.set((session.student as any).id, session.student);
+      for (const a of accepted) {
+        const s = (a as any).student;
+        if (s?.id) studentsById.set(s.id, s);
+      }
+
+      const tasks: Promise<any>[] = [
         this.notificationsService.notifyLiveSessionStarting(instructor.id, session.title, session.id),
-        this.notificationsService.notifyLiveSessionStarting(student.id, session.title, session.id),
-        instructor.email
-          ? this.emailService.sendSessionReminder(instructor.email, `${instructor.firstName} ${instructor.lastName}`, session.title, 15, session.id, frontendUrl)
-          : Promise.resolve(),
-        student.email
-          ? this.emailService.sendSessionReminder(student.email, `${student.firstName} ${student.lastName}`, session.title, 15, session.id, frontendUrl)
-          : Promise.resolve(),
-      ]);
+      ];
+      if (instructor.email) {
+        tasks.push(this.emailService.sendSessionReminder(
+          instructor.email, `${instructor.firstName} ${instructor.lastName}`, session.title, 15, session.id, frontendUrl,
+        ));
+      }
+      for (const s of studentsById.values()) {
+        tasks.push(this.notificationsService.notifyLiveSessionStarting(s.id, session.title, session.id));
+        if (s.email) {
+          tasks.push(this.emailService.sendSessionReminder(
+            s.email, `${s.firstName} ${s.lastName}`, session.title, 15, session.id, frontendUrl,
+          ));
+        }
+      }
+
+      await Promise.allSettled(tasks);
     }
   }
 

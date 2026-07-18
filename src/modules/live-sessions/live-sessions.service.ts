@@ -320,12 +320,14 @@ export class LiveSessionsService {
 
     const student = updated.student as any;
 
-    // Notify student
+    // Notify the student — in-app + FCM push (createNotification pushes when
+    // they're offline). This is the "your live class is approved" alert.
     this.notificationsService.createNotification({
       userId:    (app as any).studentId,
-      type:      NotificationType.SYSTEM_ALERT,
-      title:     'Application accepted!',
-      message:   `You have been accepted for "${session.title}" on ${new Date(session.scheduledAt).toDateString()}`,
+      type:      NotificationType.LIVE_SESSION,
+      title:     'Live class approved 🎉',
+      message:   `You're in! "${session.title}" is on ${new Date(session.scheduledAt).toDateString()}. We'll remind you before it starts.`,
+      data:      { sessionId: session.id },
       actionUrl: `/live-sessions/${session.id}`,
     }).catch(() => {});
 
