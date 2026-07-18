@@ -933,7 +933,14 @@ model ContentReport {
 
 model InstructorApplication {
   id                 String    @id @default(cuid())
-  userId             String    @unique
+  // Null until an admin approves a public application — the user account is
+  // created at approval time so unapproved applicants never occupy a user row.
+  userId             String?   @unique
+  // Applicant details, captured up front for public (pre-account) applications.
+  email              String?
+  firstName          String?
+  lastName           String?
+  passwordHash       String?
   motivation         String
   teachingExperience String?
   subjectExpertise   String[]
@@ -946,9 +953,10 @@ model InstructorApplication {
   createdAt          DateTime  @default(now())
   updatedAt          DateTime  @updatedAt
 
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user User? @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([status])
+  @@index([email])
   @@map("instructor_applications")
 }
 

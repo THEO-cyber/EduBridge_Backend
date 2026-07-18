@@ -2,10 +2,11 @@ import {
   Controller, Post, Get, Patch, Param, Body, Query, UseGuards,
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiBearerAuth, ApiQuery } from '@nestjs/swagger';
-import { ApplicationsService, SubmitApplicationDto, ReviewApplicationDto } from './applications.service';
+import { ApplicationsService, SubmitApplicationDto, ReviewApplicationDto, PublicInstructorApplyDto } from './applications.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { Roles } from '../../common/decorators/roles.decorator';
+import { Public } from '../../common/decorators/public.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { PaginationDto } from '../../common/dto/pagination.dto';
 import { Role, User } from '@prisma/client';
@@ -17,8 +18,17 @@ import { Role, User } from '@prisma/client';
 export class ApplicationsController {
   constructor(private readonly applicationsService: ApplicationsService) {}
 
+  @Public()
+  @Post('instructor/apply')
+  @ApiOperation({
+    summary: 'Apply to become an instructor without an account. The account is created only if an admin approves.',
+  })
+  applyPublic(@Body() dto: PublicInstructorApplyDto) {
+    return this.applicationsService.applyPublic(dto);
+  }
+
   @Post('instructor')
-  @ApiOperation({ summary: 'Apply to become an instructor' })
+  @ApiOperation({ summary: 'Apply to become an instructor (existing signed-in user)' })
   submit(@CurrentUser() user: User, @Body() dto: SubmitApplicationDto) {
     return this.applicationsService.submit(user.id, dto);
   }

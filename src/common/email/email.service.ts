@@ -78,6 +78,34 @@ export class EmailService {
     void this.send(to, subject, html);
   }
 
+  // ─── Instructor applications ───────────────────────────────────────────────
+
+  async sendInstructorApplicationApproved(to: string, name: string, frontendUrl: string) {
+    const link = `${frontendUrl}/login`;
+    await this.send(to, "You're approved to teach on EduBridge 🎉", `
+      <div style="font-family:sans-serif;max-width:600px;margin:auto;padding:24px">
+        <h2 style="color:#1f2937">Welcome aboard, ${name}!</h2>
+        <p style="color:#374151">Your instructor application has been approved. Your account is now
+        active — sign in with the email and password you used when you applied to start creating courses.</p>
+        <a href="${link}" style="display:inline-block;padding:12px 24px;background:#1A237E;color:#fff;border-radius:6px;text-decoration:none;font-weight:600;margin-top:8px">
+          Log in to EduBridge
+        </a>
+      </div>
+    `);
+  }
+
+  async sendInstructorApplicationRejected(to: string, name: string, reason: string) {
+    await this.send(to, 'Update on your EduBridge instructor application', `
+      <div style="font-family:sans-serif;max-width:600px;margin:auto;padding:24px">
+        <h2 style="color:#1f2937">Hi ${name},</h2>
+        <p style="color:#374151">Thank you for your interest in teaching on EduBridge. After review, we
+        weren't able to approve your application at this time.</p>
+        ${reason ? `<p style="color:#374151"><strong>Reason:</strong> ${reason}</p>` : ''}
+        <p style="color:#6b7280;font-size:14px">You're welcome to apply again in the future.</p>
+      </div>
+    `);
+  }
+
   // ─── Verification & Password ───────────────────────────────────────────────
 
   async sendEmailVerification(to: string, name: string, token: string, frontendUrl: string) {
