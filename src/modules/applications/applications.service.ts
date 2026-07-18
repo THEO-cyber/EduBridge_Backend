@@ -71,6 +71,16 @@ export class ReviewApplicationDto {
   @IsOptional() @IsString() rejectionReason?: string;
 }
 
+/**
+ * Admin list query. Extends pagination with an optional status filter — needed
+ * because the global ValidationPipe (forbidNonWhitelisted) rejects any query
+ * property that isn't declared on the DTO.
+ */
+export class ListApplicationsQueryDto extends PaginationDto {
+  @ApiPropertyOptional({ enum: ['pending', 'approved', 'rejected'] })
+  @IsOptional() @IsIn(['pending', 'approved', 'rejected']) status?: string;
+}
+
 @Injectable()
 export class ApplicationsService {
   private readonly logger = new Logger(ApplicationsService.name);

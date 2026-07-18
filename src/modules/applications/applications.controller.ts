@@ -1,14 +1,13 @@
 import {
   Controller, Post, Get, Patch, Param, Body, Query, UseGuards,
 } from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiBearerAuth, ApiQuery } from '@nestjs/swagger';
-import { ApplicationsService, SubmitApplicationDto, ReviewApplicationDto, PublicInstructorApplyDto } from './applications.service';
+import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
+import { ApplicationsService, SubmitApplicationDto, ReviewApplicationDto, PublicInstructorApplyDto, ListApplicationsQueryDto } from './applications.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { Public } from '../../common/decorators/public.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
-import { PaginationDto } from '../../common/dto/pagination.dto';
 import { Role, User } from '@prisma/client';
 
 @ApiTags('Instructor Applications')
@@ -45,12 +44,8 @@ export class ApplicationsController {
   @UseGuards(RolesGuard)
   @Roles(Role.ADMIN)
   @ApiOperation({ summary: 'List instructor applications (Admin)' })
-  @ApiQuery({ name: 'status', required: false, enum: ['pending', 'approved', 'rejected'] })
-  adminList(
-    @Query() pagination: PaginationDto,
-    @Query('status') status?: string,
-  ) {
-    return this.applicationsService.adminList(pagination, status);
+  adminList(@Query() query: ListApplicationsQueryDto) {
+    return this.applicationsService.adminList(query, query.status);
   }
 
   @Get('instructor/stats')
