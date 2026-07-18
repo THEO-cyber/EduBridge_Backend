@@ -25,19 +25,34 @@ export type RedisConnection =
   | InstanceType<typeof import('ioredis-mock')>;
 
 export async function createRedisConnection(): Promise<RedisConnection> {
-  const host     = process.env.REDIS_HOST || 'localhost';
-  const port     = parseInt(process.env.REDIS_PORT || '6379', 10);
-  const password = process.env.REDIS_PASSWORD || undefined;
+  // A single rediss:// URL (e.g. from Upstash) carries host, port, password and
+  // TLS — prefer it when set so one env var configures everything.
+  const url = process.env.REDIS_URL;
+  let host     = process.env.REDIS_HOST || 'localhost';
+  let port     = parseInt(process.env.REDIS_PORT || '6379', 10);
+  let password = process.env.REDIS_PASSWORD || undefined;
+  let tls: object | undefined = process.env.REDIS_TLS === 'true' ? {} : undefined;
+  if (url) {
+    try {
+      const u = new URL(url);
+      host     = u.hostname;
+      port     = parseInt(u.port || '6379', 10);
+      password = u.password ? decodeURIComponent(u.password) : password;
+      if (u.protocol === 'rediss:') tls = {};
+    } catch {
+      logger.warn('REDIS_URL is set but could not be parsed — falling back to REDIS_HOST/PORT.');
+    }
+  }
   const isProd   = process.env.NODE_ENV === 'production';
 
   if (isProd) {
     // In production always use real Redis — never fall back silently
-    logger.log(`Using Redis at ${host}:${port}`);
+    logger.log(`Using Redis at ${host}:${port}${tls ? ' (TLS)' : ''}`);
     return {
       host,
       port,
       password,
-      tls: process.env.REDIS_TLS === 'true' ? {} : undefined,
+      tls,
       maxRetriesPerRequest: null,
       enableReadyCheck: false,
     };

@@ -21,8 +21,15 @@ import { probeRedis } from './common/redis/redis-connection.factory';
 const IS_WORKER = process.env.WORKER_MODE === 'true';
 
 async function bootstrap() {
-  const redisHost = process.env.REDIS_HOST ?? 'localhost';
-  const redisPort = parseInt(process.env.REDIS_PORT ?? '6379', 10);
+  let redisHost = process.env.REDIS_HOST ?? 'localhost';
+  let redisPort = parseInt(process.env.REDIS_PORT ?? '6379', 10);
+  if (process.env.REDIS_URL) {
+    try {
+      const u = new URL(process.env.REDIS_URL);
+      redisHost = u.hostname;
+      redisPort = parseInt(u.port || '6379', 10);
+    } catch { /* keep host/port from REDIS_HOST/PORT */ }
+  }
   const redisAvailable = await probeRedis(redisHost, redisPort, 1500);
   process.env.REDIS_AVAILABLE = redisAvailable ? 'true' : 'false';
 

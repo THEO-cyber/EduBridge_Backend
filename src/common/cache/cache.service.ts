@@ -15,19 +15,29 @@ export class CacheService implements OnModuleInit, OnModuleDestroy {
       const host = this.configService.get<string>('redis.host') ?? 'localhost';
       const port = this.configService.get<number>('redis.port') ?? 6379;
       const password = this.configService.get<string>('redis.password');
+      const url = this.configService.get<string>('redis.url');
+      // Managed Redis (Upstash etc.) is TLS-only. A rediss:// URL already
+      // implies TLS; otherwise honour the REDIS_TLS flag.
+      const useTls =
+        this.configService.get<boolean>('redis.tls') === true ||
+        (url?.startsWith('rediss://') ?? false);
 
-      this.client = createClient({
-        socket: {
-          host,
-          port,
-          connectTimeout: 3_000,
-          reconnectStrategy: (retries: number) => {
-            if (retries > 3) return false; // give up after 3 retries
-            return Math.min(retries * 500, 3_000);
-          },
+      const socket = {
+        connectTimeout: 3_000,
+        reconnectStrategy: (retries: number) => {
+          if (retries > 3) return false; // give up after 3 retries
+          return Math.min(retries * 500, 3_000);
         },
-        ...(password ? { password } : {}),
-      }) as unknown as RedisClientType;
+      };
+
+      this.client = createClient(
+        url
+          ? { url, socket }
+          : {
+              socket: { host, port, ...socket, ...(useTls ? { tls: true } : {}) },
+              ...(password ? { password } : {}),
+            },
+      ) as unknown as RedisClientType;
 
       this.client.on('error', () => {}); // suppress unhandled error events
 

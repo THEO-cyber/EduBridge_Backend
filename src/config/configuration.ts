@@ -14,6 +14,9 @@ export const configuration = () => ({
     host: process.env.REDIS_HOST || 'localhost',
     port: parseInt(process.env.REDIS_PORT || '6379', 10),
     password: process.env.REDIS_PASSWORD || '',
+    // Upstash (and most managed Redis) require TLS. A rediss:// URL implies it.
+    tls: process.env.REDIS_TLS === 'true',
+    url: process.env.REDIS_URL || '',
   },
 
   // No fallback secrets here on purpose — JOI_VALIDATION_SCHEMA in app.module.ts
