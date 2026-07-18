@@ -107,6 +107,9 @@ export class AdminService {
       if (filters.createdBefore) where.createdAt.lte = filters.createdBefore;
     }
 
+    // Hide anonymised (deleted) accounts.
+    where.NOT = { email: { endsWith: '@deleted.invalid' } };
+
     const [users, total] = await Promise.all([
       this.prisma.user.findMany({
         where,
@@ -334,38 +337,43 @@ export class AdminService {
   }
 
   async deleteUser(userId: string) {
-    const user = await this.prisma.user.findUnique({
-      where: { id: userId },
-      include: {
-        courseCreated: true,
-        enrollments: true,
-      },
-    });
-
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
     if (!user) {
       throw new NotFoundException('User not found');
     }
 
-    if (user.role === Role.ADMIN) {
-      throw new ForbiddenException('Cannot delete admin users');
+    // Never delete another admin/super-admin from here.
+    if (user.role === Role.ADMIN || user.role === Role.SUPER_ADMIN) {
+      throw new ForbiddenException('Cannot delete an admin account');
     }
 
-    // Check if user has active courses or enrollments
-    if (user.courseCreated.length > 0) {
-      throw new BadRequestException(
-        'Cannot delete user with published courses',
-      );
-    }
+    const tombstone = `deleted_${Date.now()}_${userId}`;
 
-    if (user.enrollments.length > 0) {
-      throw new BadRequestException(
-        'Cannot delete user with active enrollments',
-      );
-    }
-
-    await this.prisma.user.delete({
-      where: { id: userId },
-    });
+    // GDPR-style erasure in one transaction: wipe PII + credentials and
+    // deactivate the account, but keep the row so enrollment/payment records
+    // stay referentially intact. (A raw user.delete() would fail — enrollments
+    // and payments reference userId without an ON DELETE CASCADE, which is why
+    // the old "has enrollments/courses" guards made deletion impossible.)
+    // Anonymised users are filtered out of the admin list (see getUsers).
+    await this.prisma.$transaction([
+      this.prisma.userAuth.deleteMany({ where: { userId } }),
+      this.prisma.deviceToken.deleteMany({ where: { userId } }),
+      this.prisma.notification.deleteMany({ where: { userId } }),
+      this.prisma.wishlist.deleteMany({ where: { userId } }),
+      this.prisma.user.update({
+        where: { id: userId },
+        data: {
+          isActive:        false,
+          email:           `${tombstone}@deleted.invalid`,
+          username:        tombstone,
+          firstName:       'Deleted',
+          lastName:        'User',
+          avatar:          null,
+          bio:             null,
+          isEmailVerified: false,
+        },
+      }),
+    ]);
 
     return { success: true, message: 'User deleted successfully' };
   }
