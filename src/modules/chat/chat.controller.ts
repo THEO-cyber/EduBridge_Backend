@@ -18,8 +18,17 @@ import {
 } from './dto/chat.dto';
 import { PaginationDto } from '../../common/dto/pagination.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
+import { RolesGuard } from '../../common/guards/roles.guard';
+import { Roles } from '../../common/decorators/roles.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
-import { User } from '@prisma/client';
+import { Role, User } from '@prisma/client';
+import { IsNotEmpty, IsString } from 'class-validator';
+
+class SupportReplyDto {
+  @IsString()
+  @IsNotEmpty()
+  content!: string;
+}
 
 @ApiTags('Chat')
 @ApiBearerAuth('JWT-auth')
@@ -50,6 +59,36 @@ export class ChatController {
     @Query() paginationDto: PaginationDto,
   ) {
     return this.chatService.getChatRooms(user.id, paginationDto);
+  }
+
+  // ── Support inbox (admin) ────────────────────────────────────────────────
+
+  @Get('admin/support')
+  @UseGuards(RolesGuard)
+  @Roles(Role.ADMIN)
+  @ApiOperation({ summary: 'List support conversations (Admin)' })
+  listSupport() {
+    return this.chatService.listSupportConversations();
+  }
+
+  @Get('admin/support/:roomId/messages')
+  @UseGuards(RolesGuard)
+  @Roles(Role.ADMIN)
+  @ApiOperation({ summary: 'Get messages in a support conversation (Admin)' })
+  supportMessages(@Param('roomId') roomId: string) {
+    return this.chatService.getSupportMessages(roomId);
+  }
+
+  @Post('admin/support/:roomId/reply')
+  @UseGuards(RolesGuard)
+  @Roles(Role.ADMIN)
+  @ApiOperation({ summary: 'Reply in a support conversation (Admin)' })
+  supportReply(
+    @Param('roomId') roomId: string,
+    @CurrentUser() user: User,
+    @Body() dto: SupportReplyDto,
+  ) {
+    return this.chatService.adminReply(roomId, user.id, dto.content);
   }
 
   @Get('rooms/:roomId/messages')

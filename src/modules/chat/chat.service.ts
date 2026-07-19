@@ -87,6 +87,11 @@ export class ChatService {
     const chatRoom = await this.prisma.chat.create({
       data: {
         name: data.name,
+        // A room opened from the in-app "Support Chat" is tagged so admins can
+        // find and answer it from the support inbox.
+        ...((data.type as string) === 'support' || data.name === 'Support Chat'
+          ? { type: 'support' }
+          : {}),
         isGroupChat: data.participants?.length > 1 || false,
         participants: {
           create: [...data.participants, creatorId].map((userId) => ({
@@ -545,5 +550,112 @@ export class ChatService {
       } as any,
       include: { participants: participantSelect },
     });
+  }
+
+  // ── Support inbox (admin) ────────────────────────────────────────────────
+
+  private _isStaff(role?: string) {
+    return role === 'ADMIN' || role === 'SUPER_ADMIN';
+  }
+
+  /** All support conversations, most-recently-active first. */
+  async listSupportConversations() {
+    const chats = await this.prisma.chat.findMany({
+      where: { type: 'support' },
+      include: {
+        participants: {
+          include: {
+            user: {
+              select: { id: true, firstName: true, lastName: true, email: true, avatar: true, role: true },
+            },
+          },
+        },
+        messages: { orderBy: { createdAt: 'desc' }, take: 1 },
+        _count: { select: { messages: true } },
+      },
+    });
+
+    const rows = chats.map((c: any) => {
+      const requester =
+        c.participants.find((p: any) => !this._isStaff(p.user.role))?.user ??
+        c.participants[0]?.user ??
+        null;
+      const last = c.messages[0];
+      return {
+        id: c.id,
+        user: requester
+          ? {
+              id: requester.id,
+              name: `${requester.firstName ?? ''} ${requester.lastName ?? ''}`.trim(),
+              email: requester.email,
+              avatar: requester.avatar,
+            }
+          : null,
+        lastMessage: last
+          ? {
+              content: last.content,
+              createdAt: last.createdAt,
+              fromUser: requester ? last.senderId === requester.id : true,
+            }
+          : null,
+        messageCount: c._count.messages,
+        lastActivityAt: last?.createdAt ?? c.updatedAt,
+      };
+    });
+
+    rows.sort(
+      (a, b) => new Date(b.lastActivityAt).getTime() - new Date(a.lastActivityAt).getTime(),
+    );
+    return rows;
+  }
+
+  /** All messages in a support conversation (admin view — no participant check). */
+  async getSupportMessages(roomId: string) {
+    const chat = await this.prisma.chat.findFirst({ where: { id: roomId, type: 'support' } });
+    if (!chat) throw new NotFoundException('Support conversation not found');
+
+    const messages = await this.prisma.chatMessage.findMany({
+      where: { chatId: roomId },
+      orderBy: { createdAt: 'asc' },
+      include: { sender: { select: { id: true, firstName: true, lastName: true, role: true } } },
+    });
+
+    return messages.map((m: any) => ({
+      id: m.id,
+      content: m.content,
+      createdAt: m.createdAt,
+      senderId: m.senderId,
+      senderName: `${m.sender.firstName ?? ''} ${m.sender.lastName ?? ''}`.trim(),
+      fromSupport: this._isStaff(m.sender.role),
+    }));
+  }
+
+  /** Admin replies in a support conversation. */
+  async adminReply(roomId: string, adminId: string, content: string) {
+    const chat = await this.prisma.chat.findFirst({ where: { id: roomId, type: 'support' } });
+    if (!chat) throw new NotFoundException('Support conversation not found');
+
+    // Ensure the admin is a participant so gateway/notification hooks work.
+    await this.prisma.chatParticipant.upsert({
+      where: { chatId_userId: { chatId: roomId, userId: adminId } },
+      create: { chatId: roomId, userId: adminId },
+      update: {},
+    });
+
+    const message = await this.prisma.chatMessage.create({
+      data: { chatId: roomId, senderId: adminId, content, messageType: 'text' },
+      include: { sender: { select: { id: true, firstName: true, lastName: true } } },
+    });
+    await this.prisma.chat.update({ where: { id: roomId }, data: { updatedAt: new Date() } });
+
+    this.eventEmitter.emit('chat.message.created', { chatId: roomId, message });
+
+    return {
+      id: message.id,
+      content: message.content,
+      createdAt: message.createdAt,
+      senderId: adminId,
+      fromSupport: true,
+    };
   }
 }
