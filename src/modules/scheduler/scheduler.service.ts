@@ -94,20 +94,44 @@ export class SchedulerService {
     }
   }
 
-  // ── Mark overdue sessions as NO_SHOW — runs every 30 minutes ─────────────
+  // ── Remove ended / expired live sessions — runs every 15 minutes ──────────
+  // A class is deleted (not archived) once it is over, so instructors never
+  // accumulate completed/expired sessions and simply create a fresh one.
 
-  @Cron('*/30 * * * *')
-  async markOverdueSessions() {
-    const cutoff = new Date(Date.now() - 60 * 60_000);
+  @Cron('*/15 * * * *')
+  async cleanupEndedSessions() {
+    const now = Date.now();
+    const graceMs = 45 * 60_000; // allow a class to run up to 45 min past its scheduled end
 
-    const overdue = await this.prisma.liveSession.updateMany({
-      where: { status: SessionStatus.SCHEDULED, scheduledAt: { lt: cutoff } },
-      data:  { status: SessionStatus.NO_SHOW },
+    // Candidates: any terminal-status session, or one whose start time has passed.
+    const candidates = await this.prisma.liveSession.findMany({
+      where: {
+        OR: [
+          { status: { in: [SessionStatus.COMPLETED, SessionStatus.CANCELLED, SessionStatus.NO_SHOW] } },
+          { scheduledAt: { lt: new Date(now) } },
+        ],
+      },
+      select: { id: true, scheduledAt: true, duration: true, status: true },
     });
 
-    if (overdue.count > 0) {
-      this.logger.log(`Marked ${overdue.count} overdue session(s) as NO_SHOW`);
-    }
+    const terminal: SessionStatus[] = [SessionStatus.COMPLETED, SessionStatus.CANCELLED, SessionStatus.NO_SHOW];
+    const toDelete = candidates
+      .filter((s) => {
+        if (terminal.includes(s.status)) return true; // already over
+        // SCHEDULED/IN_PROGRESS: gone once the class window + grace has passed.
+        const endMs = new Date(s.scheduledAt).getTime() + (s.duration ?? 60) * 60_000 + graceMs;
+        return now > endMs;
+      })
+      .map((s) => s.id);
+
+    if (toDelete.length === 0) return;
+
+    await this.prisma.$transaction([
+      this.prisma.sessionRequest.deleteMany({ where: { liveSessionId: { in: toDelete } } as any }),
+      this.prisma.liveSession.deleteMany({ where: { id: { in: toDelete } } }),
+    ]);
+
+    this.logger.log(`Removed ${toDelete.length} ended/expired live session(s)`);
   }
 
   // ── Delete old notifications — runs daily at 3 AM ─────────────────────────

@@ -506,17 +506,20 @@ export class LiveSessionsService {
       }
     }
 
-    const completed = await (this.prisma as any).liveSession.update({
-      where: { id: sessionId },
-      data:  { status: SessionStatus.COMPLETED, endedAt: new Date(), meetingNotes },
-    });
-
-    // Notify accepted students to leave a review for the linked course
+    // Notify accepted students to review the linked course while the session
+    // rows still exist (the notification is keyed on the course, not the session).
     if (session.courseId) {
-      this.notifyStudentsToReview(sessionId, session).catch(() => {});
+      await this.notifyStudentsToReview(sessionId, session).catch(() => {});
     }
 
-    return completed;
+    // A finished class is removed entirely — no lingering COMPLETED/expired
+    // sessions. Delete its applications first, then the session itself.
+    await this.prisma.$transaction([
+      this.prisma.sessionRequest.deleteMany({ where: { liveSessionId: sessionId } as any }),
+      (this.prisma as any).liveSession.delete({ where: { id: sessionId } }),
+    ]);
+
+    return { ended: true, deleted: true, sessionId };
   }
 
   private async notifyStudentsToReview(sessionId: string, session: any) {
