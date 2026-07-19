@@ -558,10 +558,16 @@ export class ChatService {
     return role === 'ADMIN' || role === 'SUPER_ADMIN';
   }
 
+  // Match rooms tagged type=support, plus legacy rooms opened as "Support Chat"
+  // before the type existed.
+  private get _supportWhere() {
+    return { OR: [{ type: 'support' }, { name: 'Support Chat' }] };
+  }
+
   /** All support conversations, most-recently-active first. */
   async listSupportConversations() {
     const chats = await this.prisma.chat.findMany({
-      where: { type: 'support' },
+      where: this._supportWhere,
       include: {
         participants: {
           include: {
@@ -611,7 +617,7 @@ export class ChatService {
 
   /** All messages in a support conversation (admin view — no participant check). */
   async getSupportMessages(roomId: string) {
-    const chat = await this.prisma.chat.findFirst({ where: { id: roomId, type: 'support' } });
+    const chat = await this.prisma.chat.findFirst({ where: { id: roomId, ...this._supportWhere } });
     if (!chat) throw new NotFoundException('Support conversation not found');
 
     const messages = await this.prisma.chatMessage.findMany({
@@ -632,7 +638,7 @@ export class ChatService {
 
   /** Admin replies in a support conversation. */
   async adminReply(roomId: string, adminId: string, content: string) {
-    const chat = await this.prisma.chat.findFirst({ where: { id: roomId, type: 'support' } });
+    const chat = await this.prisma.chat.findFirst({ where: { id: roomId, ...this._supportWhere } });
     if (!chat) throw new NotFoundException('Support conversation not found');
 
     // Ensure the admin is a participant so gateway/notification hooks work.
