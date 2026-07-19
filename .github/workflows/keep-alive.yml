@@ -4,7 +4,9 @@ name: Keep Render awake
 # Runs on GitHub's infrastructure (independent of any local session).
 on:
   schedule:
-    - cron: '*/10 * * * *' # every 10 minutes
+    # Every 5 minutes. GitHub's scheduler is best-effort and often runs late,
+    # so we schedule more often than the 15-min Render sleep window to be safe.
+    - cron: '*/5 * * * *'
   workflow_dispatch: {} # allow manual runs from the Actions tab
 
 jobs:
@@ -13,6 +15,6 @@ jobs:
     steps:
       - name: Ping health endpoint
         run: |
-          curl -fsS --max-time 60 \
+          curl -fsS --max-time 90 --retry 4 --retry-delay 15 --retry-all-errors \
             https://edubridge-api-s5l4.onrender.com/api/v1/health/live \
             && echo " — pinged OK" || echo "ping failed (will retry next run)"
