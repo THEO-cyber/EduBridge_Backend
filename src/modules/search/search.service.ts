@@ -114,8 +114,8 @@ export class SearchService {
     }
 
     const categoryJoin = dto.category
-      ? `JOIN "Category" cat ON cat.id = c."categoryId" AND (cat.id = $${paramIdx} OR cat.slug = $${paramIdx} OR cat.name ILIKE '%' || $${paramIdx} || '%')`
-      : `LEFT JOIN "Category" cat ON cat.id = c."categoryId"`;
+      ? `JOIN "categories" cat ON cat.id = c."categoryId" AND (cat.id = $${paramIdx} OR cat.slug = $${paramIdx} OR cat.name ILIKE '%' || $${paramIdx} || '%')`
+      : `LEFT JOIN "categories" cat ON cat.id = c."categoryId"`;
 
     if (dto.category) {
       params.push(dto.category);
@@ -127,8 +127,8 @@ export class SearchService {
 
     const countSql = `
       SELECT COUNT(*) as total
-      FROM "Course" c
-      JOIN "User" u ON u.id = c."instructorId"
+      FROM "courses" c
+      JOIN "users" u ON u.id = c."instructorId"
       ${categoryJoin}
       WHERE ${whereClause}
     `;
@@ -150,8 +150,8 @@ export class SearchService {
           similarity(COALESCE(c.description, ''), $1),
           similarity(COALESCE(c."shortDescription", ''), $1)
         ) as rank
-      FROM "Course" c
-      JOIN "User" u ON u.id = c."instructorId"
+      FROM "courses" c
+      JOIN "users" u ON u.id = c."instructorId"
       ${categoryJoin}
       WHERE ${whereClause}
       ORDER BY ${orderBy}
@@ -224,7 +224,7 @@ export class SearchService {
     // Use trigram similarity for smarter suggestions
     const suggestions = await this.prisma.$queryRaw<Array<{ id: string; title: string; thumbnail: string | null; rating: number }>>`
       SELECT id, title, thumbnail, rating
-      FROM "Course"
+      FROM "courses"
       WHERE status = ${CourseStatus.PUBLISHED}::"CourseStatus"
         AND "isPublished" = true
         AND (

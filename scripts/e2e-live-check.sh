@@ -12,7 +12,8 @@ PW='Password123!'
 STAMP=$(date +%s)
 STUDENT="e2e-student-$STAMP@example.com"
 APPLICANT="e2e-teacher-$STAMP@example.com"
-BODY="$(mktemp)"
+BODY="./.e2e-live-check-body-$$.json"
+trap 'rm -f "$BODY"' EXIT
 PASS=0; FAIL=0; N=0
 
 grn=$'\033[32m'; red=$'\033[31m'; dim=$'\033[2m'; rst=$'\033[0m'
